@@ -1,0 +1,1273 @@
+@import "tailwindcss";
+@import "./plan-mode.css";
+@import "./highlight-theme.css";
+
+/* ─── Design Tokens ─────────────────────────────────────────────────────────── */
+
+@theme {
+	/* === BRAND COLORS ===
+	   Change these two values to rebrand the entire app.
+	   They are constant across all user-selected themes. */
+	--color-brand-a: #ff2d7b; /* pink */
+	--color-brand-b: #00e5ff; /* cyan */
+	--color-brand-a-glow: rgba(255, 45, 123, 0.15);
+	--color-brand-b-glow: rgba(0, 229, 255, 0.15);
+
+	--animate-cascade-a: pixel-cascade-a 2.4s ease-in-out infinite;
+	--animate-cascade-b: pixel-cascade-b 2.4s ease-in-out infinite;
+	--animate-cascade-a-fast: pixel-cascade-a 1.4s ease-in-out infinite;
+	--animate-cascade-b-fast: pixel-cascade-b 1.4s ease-in-out infinite;
+
+	--font-brand: "Chakra Petch", sans-serif;
+
+	--color-bg: #18181b;
+	--color-bg-alt: #27272a;
+	--color-bg-surface: #27272a;
+	--color-text: #e4e4e7;
+	--color-text-secondary: #a1a1aa;
+	--color-text-muted: #71717a;
+	--color-text-dimmer: #52525b;
+	--color-accent: #ff2d7b;
+	--color-accent-hover: #ff4d91;
+	--color-accent-bg: rgba(255, 45, 123, 0.12);
+	--color-code-bg: #131315;
+	--color-border: #3f3f46;
+	--color-border-subtle: rgba(255, 255, 255, 0.06);
+	--color-input-bg: #333338;
+	--color-user-bubble: #2c2c30;
+	--color-error: #ff4444;
+	--color-success: #22c55e;
+
+	--color-sidebar-bg: #141416;
+	--color-sidebar-hover: #202023;
+	--color-sidebar-active: #2a2a2e;
+
+	--color-thinking: #eab308;
+	--color-thinking-bg: rgba(234, 179, 8, 0.06);
+	--color-tool: #00e5ff;
+	--color-tool-bg: rgba(0, 229, 255, 0.04);
+	--color-warning: #eab308;
+	--color-warning-bg: rgba(234, 179, 8, 0.12);
+
+	--overlay-rgb: 255, 255, 255;
+	--shadow-rgb: 0, 0, 0;
+
+	/* Syntax highlighting defaults (conduit dark theme) */
+	--hl-comment: #52525b;
+	--hl-keyword: #ff2d7b;
+	--hl-string: #22c55e;
+	--hl-number: #ff2d7b;
+	--hl-function: #00e5ff;
+	--hl-variable: #ff4444;
+	--hl-type: #eab308;
+	--hl-constant: #ff2d7b;
+	--hl-tag: #ff4444;
+	--hl-attr: #00e5ff;
+	--hl-regexp: #00e5ff;
+	--hl-meta: #eab308;
+	--hl-builtin: #ff2d7b;
+	--hl-symbol: #eab308;
+	--hl-addition: #22c55e;
+	--hl-deletion: #ff4444;
+
+	--font-mono:
+		"JetBrains Mono", "Berkeley Mono", "IBM Plex Mono", ui-monospace,
+		SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+		monospace;
+	--font-sans:
+		"JetBrains Mono", "Berkeley Mono", "IBM Plex Mono", ui-monospace,
+		SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+		monospace;
+
+	/* ── Font Size Scale (overrides Tailwind defaults) ──── */
+	--text-xs: 10px;
+	--text-xs--line-height: 1.4;
+
+	--text-sm: 11px;
+	--text-sm--line-height: 1.4;
+
+	--text-base: 12px;
+	--text-base--line-height: 1.5;
+
+	--text-lg: 15px;
+	--text-lg--line-height: 1.4;
+
+	--text-xl: 20px;
+	--text-xl--line-height: 1.3;
+
+	--text-2xl: 24px;
+	--text-2xl--line-height: 1.2;
+}
+
+@utility glow-brand-a {
+	box-shadow:
+		-4px 0 16px var(--color-brand-a-glow),
+		-3px 0 0 var(--color-brand-a);
+}
+@utility glow-brand-b {
+	box-shadow:
+		-4px 0 16px var(--color-brand-b-glow),
+		-3px 0 0 var(--color-brand-b);
+}
+@utility glow-brand-a-strong {
+	box-shadow:
+		0 0 8px rgba(255, 45, 123, 0.4),
+		0 0 24px rgba(255, 45, 123, 0.15);
+}
+@utility glow-brand-b-strong {
+	box-shadow:
+		0 0 8px rgba(0, 229, 255, 0.4),
+		0 0 24px rgba(0, 229, 255, 0.15);
+}
+@utility glow-tool-running {
+	box-shadow:
+		-4px 0 16px rgba(234, 179, 8, 0.15),
+		-3px 0 0 var(--color-warning);
+}
+@utility glow-tool-completed {
+	box-shadow:
+		-4px 0 16px rgba(0, 229, 255, 0.12),
+		-3px 0 0 var(--color-brand-b);
+}
+@utility glow-tool-error {
+	box-shadow:
+		-4px 0 16px rgba(255, 68, 68, 0.15),
+		-3px 0 0 var(--color-error);
+}
+
+@keyframes pixel-cascade-a {
+	0% {
+		opacity: 0.15;
+	}
+	20% {
+		opacity: 1;
+	}
+	40% {
+		opacity: 0.3;
+	}
+	60% {
+		opacity: 0.8;
+	}
+	80% {
+		opacity: 0.15;
+	}
+	100% {
+		opacity: 0.5;
+	}
+}
+@keyframes pixel-cascade-b {
+	0% {
+		opacity: 0.5;
+	}
+	25% {
+		opacity: 0.15;
+	}
+	50% {
+		opacity: 1;
+	}
+	75% {
+		opacity: 0.3;
+	}
+	100% {
+		opacity: 0.15;
+	}
+}
+
+/* ─── Base ──────────────────────────────────────────────────────────────────── */
+
+@layer base {
+	*,
+	*::before,
+	*::after {
+		box-sizing: border-box;
+		margin: 0;
+		padding: 0;
+		-webkit-tap-highlight-color: transparent;
+		scrollbar-width: thin;
+		scrollbar-color: rgba(var(--overlay-rgb), 0.15) transparent;
+	}
+
+	::-webkit-scrollbar {
+		width: 6px;
+		height: 6px;
+	}
+	::-webkit-scrollbar-track {
+		background: transparent;
+	}
+	::-webkit-scrollbar-thumb {
+		background: rgba(var(--overlay-rgb), 0.15);
+		border-radius: 3px;
+	}
+	::-webkit-scrollbar-thumb:hover {
+		background: rgba(var(--overlay-rgb), 0.25);
+	}
+
+	html,
+	body {
+		height: 100%;
+		background: var(--color-bg);
+		color: var(--color-text);
+		font-family: var(--font-sans);
+		-webkit-font-smoothing: antialiased;
+		-moz-osx-font-smoothing: grayscale;
+		overflow: hidden;
+		font-size: 12px;
+		line-height: 1.5;
+	}
+
+	/* Lucide icons */
+	.lucide {
+		vertical-align: middle;
+		flex-shrink: 0;
+	}
+
+	.icon-spin {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.icon-spin .lucide {
+		animation: spin 1s linear infinite;
+	}
+
+	.icon-spin-inline {
+		animation: spin 1s linear infinite;
+	}
+}
+
+/* ─── Custom Variants ──────────────────────────────────────────────────────── */
+
+@custom-variant touch (@media (hover: none));
+
+/* ─── Custom Animation Utilities ───────────────────────────────────────────── */
+
+@utility animate-pulse-dot {
+	animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+@utility animate-shimmer {
+	animation: shimmer 3s ease-in-out infinite;
+}
+
+@utility animate-tool-shimmer {
+	animation: tool-shimmer 3s ease-in-out infinite;
+}
+
+@utility animate-history-spin {
+	animation: history-spin 0.8s linear infinite;
+}
+
+@utility animate-history-fade-in {
+	animation: history-fade-in 0.2s ease-out;
+}
+
+@utility animate-todo-spin {
+	animation: todo-spin 0.8s linear infinite;
+}
+
+@utility animate-fb-slide-in {
+	animation: fb-slide-in 0.2s ease-out;
+}
+
+@utility animate-fb-fade-in {
+	animation: fb-fade-in 0.15s ease-out;
+}
+
+@utility animate-session-slide-in {
+	animation: session-slide-in 0.2s ease-out;
+}
+
+@utility animate-session-fade-in {
+	animation: session-fade-in 0.15s ease-out;
+}
+
+@utility animate-bounce-bar {
+	animation: bounce-bar 1.5s ease-in-out infinite;
+}
+
+/* ─── Connection Overlay (7.5) ────────────────────────────────────────────── */
+
+.connect-overlay.hidden {
+	display: none;
+}
+
+@keyframes shimmer {
+	0% {
+		background-position: 200% center;
+	}
+	100% {
+		background-position: -200% center;
+	}
+}
+
+/* ─── Modal System (7.10) ──────────────────────────────────────────────────── */
+
+.modal-backdrop.hidden {
+	display: none;
+}
+
+/* ─── Sidebar ──────────────────────────────────────────────────────────────── */
+
+/* Sidebar width driven by --sidebar-w custom property (set inline by Sidebar.svelte) */
+#sidebar {
+	width: var(--sidebar-w, 260px);
+	transition: width 0.15s ease;
+}
+
+/* Collapsed: hide border + clip content (width already 0 via --sidebar-w) */
+#layout.sidebar-collapsed #sidebar {
+	border-right: none;
+	overflow: hidden;
+}
+
+/* Hide sidebar resize handle when collapsed */
+#layout.sidebar-collapsed .sidebar-resize-handle {
+	display: none;
+}
+
+/* Overlay hidden state */
+#sidebar-overlay.hidden {
+	display: none;
+}
+
+/* ─── Header ───────────────────────────────────────────────────────────────── */
+
+/* Header icon button component (6+ instances — keep as @apply).
+   MUST be inside @layer components so Tailwind utilities like `hidden`
+   (display:none) properly override the `display:flex` set here. */
+@layer components {
+	.header-icon-btn {
+		@apply flex items-center justify-center rounded-lg bg-transparent cursor-pointer transition-[background,color,border-color] duration-150 shrink-0;
+		border: 1px solid transparent;
+		color: var(--color-text-dimmer);
+		padding: 4px;
+	}
+	.header-icon-btn:hover {
+		color: var(--color-text-secondary);
+		background: rgba(var(--overlay-rgb), 0.04);
+		border-color: var(--color-border);
+	}
+	.header-icon-btn .lucide {
+		@apply w-[15px] h-[15px];
+	}
+	.header-icon-btn.active {
+		background: rgba(var(--overlay-rgb), 0.06);
+		@apply text-accent;
+	}
+}
+
+/* Badge hidden state overrides */
+.client-count-badge.hidden {
+	display: none;
+}
+
+.terminal-badge.hidden {
+	display: none;
+}
+
+/* Parent-state: sidebar expand button only visible when sidebar collapsed */
+#layout.sidebar-collapsed #sidebar-expand-btn {
+	display: flex;
+}
+
+/* ─── Header project-name — marquee scroll on hover for long names ──── */
+
+#header-project-scroll {
+	text-overflow: ellipsis;
+}
+#header-project-scroll:hover {
+	text-overflow: clip;
+}
+#header-project-scroll:hover .header-project-inner {
+	animation: marquee-scroll var(--marquee-dur, 6s) linear 0.4s infinite;
+}
+
+/* ─── Mobile responsive ────────────────────────────────────────────────────── */
+
+@media (max-width: 768px) {
+	#sidebar {
+		position: fixed;
+		left: 0;
+		top: 0;
+		bottom: 0;
+		z-index: 400;
+		transform: translateX(-100%);
+		transition: transform 0.25s ease;
+		/* Mobile sidebar width driven by --sidebar-w custom property */
+		width: var(--sidebar-w, 260px);
+		border-right: 1px solid var(--color-border-subtle);
+		overflow: visible;
+	}
+
+	/* Override collapsed state on mobile — hamburger controls visibility */
+	#layout.sidebar-collapsed #sidebar {
+		width: var(--sidebar-w, 260px);
+		border-right: 1px solid var(--color-border-subtle);
+		overflow: visible;
+	}
+
+	#sidebar.open {
+		transform: translateX(0);
+	}
+
+	/* Hide the layout-level sidebar resize handle on mobile (uses internal handle instead) */
+	.sidebar-resize-handle {
+		display: none;
+	}
+
+	#hamburger-btn {
+		display: flex;
+	}
+
+	#sidebar-toggle-btn,
+	#sidebar-expand-btn,
+	#layout.sidebar-collapsed #sidebar-expand-btn {
+		display: none;
+	}
+}
+
+/* ─── Animations ────────────────────────────────────────────────────────────── */
+
+@keyframes pulse-dot {
+	0%,
+	100% {
+		opacity: 1;
+	}
+	50% {
+		opacity: 0.4;
+	}
+}
+
+@keyframes spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+@keyframes bounce-bar {
+	0%,
+	100% {
+		transform: translateX(0);
+	}
+	50% {
+		/* translateX % is relative to the element's own width, so we compute
+		   (1 - fraction) / fraction * 100% to traverse the full track. */
+		transform: translateX(
+			calc((1 - var(--bounce-width)) / var(--bounce-width) * 100%)
+		);
+	}
+}
+
+@keyframes marquee-scroll {
+	0% {
+		transform: translateX(0);
+	}
+	100% {
+		transform: translateX(-100%);
+	}
+}
+
+/* ─── Session title marquee on hover ────────────────────────────────────────── */
+/* The .session-item-title clips overflow. On hover, the inner span scrolls left
+   in a continuous loop so long titles are fully readable. */
+.session-item:hover .session-item-title {
+	text-overflow: clip;
+}
+.session-item:hover .session-item-title .session-title-inner {
+	animation: marquee-scroll var(--marquee-dur, 6s) linear 0.4s infinite;
+}
+
+/* ─── Markdown content ──────────────────────────────────────────────────────── */
+
+@layer components {
+	/* Prevent long unbroken strings (URLs, inline code, etc.) from overflowing
+	   the message card and widening the viewport. */
+	.md-content {
+		overflow-wrap: break-word;
+		min-width: 0;
+	}
+
+	.md-content h1,
+	.md-content h2,
+	.md-content h3,
+	.md-content h4,
+	.md-content h5,
+	.md-content h6 {
+		@apply font-semibold mt-[24px] mb-[12px] leading-[1.3];
+	}
+	.md-content h1 {
+		@apply text-[1.65em];
+	}
+	.md-content h2 {
+		@apply text-[1.3em];
+	}
+	.md-content h3 {
+		@apply text-[1.15em];
+	}
+
+	.md-content p {
+		@apply mb-3.5 mt-0;
+	}
+	.md-content p:last-child {
+		@apply mb-0;
+	}
+
+	.md-content a {
+		color: var(--color-accent);
+		@apply no-underline;
+	}
+	.md-content a:hover {
+		@apply underline;
+	}
+
+	.md-content strong {
+		@apply font-semibold;
+	}
+	.md-content em {
+		@apply italic;
+	}
+
+	.md-content ul {
+		list-style-type: disc;
+		@apply pl-7 my-2.5;
+	}
+	.md-content ol {
+		list-style-type: decimal;
+		@apply pl-7 my-2.5;
+	}
+	.md-content li {
+		@apply mb-1.5 mt-0 pl-1;
+	}
+	.md-content li::marker {
+		color: var(--color-brand-b);
+	}
+	.md-content ol li::marker {
+		color: var(--color-text-muted);
+		font-family: var(--font-mono);
+		font-variant-numeric: tabular-nums;
+	}
+	.md-content ul ul {
+		list-style-type: circle;
+		@apply my-1;
+	}
+	.md-content ul ul li::marker {
+		color: var(--color-text-dimmer);
+	}
+	.md-content li > p {
+		@apply my-0.5;
+	}
+
+	.md-content blockquote {
+		border-left: 3px solid var(--color-border);
+		@apply pl-4 my-3;
+		color: var(--color-text-secondary);
+	}
+
+	.md-content code {
+		@apply font-mono text-[1em] rounded-[6px] px-[7px] py-[2px];
+		background: var(--color-code-bg);
+	}
+
+	.md-content pre {
+		@apply relative rounded-xl my-3.5 overflow-hidden;
+		background: var(--color-code-bg);
+		border: 1px solid var(--color-border-subtle);
+	}
+	.md-content pre code {
+		@apply block px-[18px] py-4 text-base leading-[1.55] whitespace-pre overflow-x-auto;
+		background: transparent;
+		border-radius: 0;
+	}
+
+	.md-content table {
+		@apply my-3.5 text-base w-full;
+		border-collapse: separate;
+		border-spacing: 0;
+		border: 1px solid var(--color-border);
+		border-radius: 8px;
+		overflow: hidden;
+	}
+	/* ── Table scroll container with shadow affordances ── */
+	.md-content .table-scroll-container {
+		position: relative;
+		@apply my-3.5;
+	}
+	.md-content .table-scroll {
+		@apply overflow-x-auto;
+		border-radius: 8px;
+	}
+	.md-content .table-scroll table {
+		@apply my-0;
+	}
+	/* Thin styled scrollbar */
+	.md-content .table-scroll::-webkit-scrollbar {
+		height: 6px;
+	}
+	.md-content .table-scroll::-webkit-scrollbar-track {
+		background: rgba(255, 255, 255, 0.03);
+		border-radius: 3px;
+	}
+	.md-content .table-scroll::-webkit-scrollbar-thumb {
+		background: var(--color-border);
+		border-radius: 3px;
+	}
+	/* Edge shadow overlays — hidden by default, shown via .visible class */
+	.md-content .table-shadow {
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		width: 32px;
+		pointer-events: none;
+		opacity: 0;
+		transition: opacity 0.2s ease;
+		z-index: 1;
+	}
+	.md-content .table-shadow.visible {
+		opacity: 1;
+	}
+	.md-content .table-shadow-left {
+		left: 0;
+		background: linear-gradient(
+			to right,
+			var(--color-bg-surface) 0%,
+			transparent 100%
+		);
+		border-radius: 8px 0 0 8px;
+	}
+	.md-content .table-shadow-right {
+		right: 0;
+		background: linear-gradient(
+			to left,
+			var(--color-bg-surface) 0%,
+			transparent 100%
+		);
+		border-radius: 0 8px 8px 0;
+	}
+	.md-content th {
+		@apply px-3.5 py-2 text-left align-top font-semibold;
+		color: var(--color-text);
+		background: rgba(0, 229, 255, 0.04);
+		border-bottom: 2px solid var(--color-brand-b);
+	}
+	.md-content td {
+		@apply px-3.5 py-[7px] text-left align-top;
+		color: var(--color-text-secondary);
+		border-bottom: 1px solid var(--color-border-subtle);
+	}
+	.md-content tbody tr:nth-child(odd) {
+		background: rgba(255, 255, 255, 0.012);
+	}
+	.md-content tr:last-child td {
+		border-bottom: none;
+	}
+	.md-content hr {
+		@apply border-0 my-5;
+		border-top: 1px solid var(--color-border);
+	}
+	.md-content img {
+		@apply max-w-full rounded-lg;
+	}
+}
+
+/* ─── Session Sidebar (4.3 + 7.3) ─────────────────────────────────────────── */
+
+@keyframes session-slide-in {
+	from {
+		transform: translateX(-100%);
+	}
+	to {
+		transform: translateX(0);
+	}
+}
+
+@keyframes session-fade-in {
+	from {
+		opacity: 0;
+	}
+	to {
+		opacity: 1;
+	}
+}
+
+/* Pseudo-element: cannot be expressed as Tailwind utility */
+.model-provider-disabled .model-provider-header::after {
+	content: " (not configured)";
+	font-weight: 400;
+	text-transform: none;
+	letter-spacing: 0;
+}
+
+/* ─── Progressive History Loading (4.8) — keyframes only ───────────────────── */
+
+@keyframes history-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+@keyframes history-fade-in {
+	from {
+		opacity: 0;
+	}
+	to {
+		opacity: 1;
+	}
+}
+
+/* ─── Todo / Progress Overlay (4.7) ────────────────────────────────────────── */
+
+@keyframes todo-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+@keyframes todo-fade-out {
+	from {
+		opacity: 1;
+	}
+	to {
+		opacity: 0;
+	}
+}
+
+/* Fade-out animation class — toggled dynamically */
+.todo-overlay.todo-fade-out {
+	animation: todo-fade-out 0.5s ease-out forwards;
+}
+
+/* Drop zone hidden state */
+.paste-drop-zone.hidden {
+	display: none;
+}
+
+/* ─── File Viewer (split pane beside chat) ────────────────────────────────── */
+
+/* Desktop: flex sibling of #app — width driven by --file-viewer-w */
+@media (min-width: 1024px) {
+	.file-viewer-pane {
+		width: var(--file-viewer-w, 50%);
+		min-width: 280px;
+		border-left: 1px solid var(--color-border);
+		background: var(--color-bg);
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+		flex-shrink: 0;
+	}
+}
+
+/* Mobile: full-screen overlay */
+@media (max-width: 1023px) {
+	.file-viewer-pane {
+		position: fixed;
+		inset: 0;
+		background: var(--color-bg);
+		z-index: 300;
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+	}
+}
+
+/* ─── File Browser (4.4) ──────────────────────────────────────────────────── */
+
+@keyframes fb-slide-in {
+	from {
+		transform: translateX(100%);
+	}
+	to {
+		transform: translateX(0);
+	}
+}
+
+@keyframes fb-fade-in {
+	from {
+		opacity: 0;
+	}
+	to {
+		opacity: 1;
+	}
+}
+
+/* Hidden override for modal overlay */
+.fb-modal-overlay.hidden {
+	display: none;
+}
+
+/* ─── Terminal Touch Toolbar (7.14) ────────────────────────────────────────── */
+
+/* Display logic must stay in CSS — hidden class / media query combo */
+.term-touch-toolbar {
+	display: none;
+	align-items: center;
+	gap: 4px;
+	padding: 6px 12px calc(6px + env(safe-area-inset-bottom, 0px));
+	background: var(--color-bg-surface);
+	border-top: 1px solid var(--color-border);
+	overflow-x: auto;
+	flex-shrink: 0;
+	-webkit-overflow-scrolling: touch;
+}
+
+.term-touch-toolbar.hidden {
+	display: none;
+}
+
+@media (max-width: 768px) {
+	.term-touch-toolbar:not(.hidden) {
+		display: flex;
+	}
+}
+
+/* Sticky Ctrl toggle — active state (toggled via JS) */
+.term-touch-toggle.active {
+	background: var(--color-accent-bg);
+	color: var(--color-accent);
+	border-color: var(--color-accent);
+}
+
+/* ─── Terminal Side Panel ──────────────────────────────────────────────────── */
+
+/* When visible, terminal-container is a flex column */
+#terminal-container:not(.hidden) {
+	display: flex;
+	flex-direction: column;
+}
+
+#terminal-container {
+	position: relative;
+}
+
+/* Drag handle on the left edge of the terminal panel */
+.term-drag-handle {
+	position: absolute;
+	left: 0;
+	top: 0;
+	bottom: 0;
+	width: 4px;
+	cursor: col-resize;
+	z-index: 10;
+	background: transparent;
+	transition: background 0.15s;
+}
+
+.term-drag-handle:hover,
+.term-drag-handle:active {
+	background: var(--color-accent);
+}
+
+/* Mobile: bottom sheet instead of side panel */
+@media (max-width: 768px) {
+	#terminal-container:not(.hidden) {
+		position: fixed;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		top: auto;
+		height: 50vh;
+		max-height: 60vh;
+		border-left: none;
+		border-top: 1px solid var(--color-border);
+		border-radius: 12px 12px 0 0;
+		z-index: 80;
+	}
+
+	.term-drag-handle {
+		left: 0;
+		right: 0;
+		top: 0;
+		bottom: auto;
+		width: 100%;
+		height: 4px;
+		cursor: row-resize;
+	}
+}
+
+/* ─── Shimmer Animations ───────────────────────────────────────────────────── */
+
+@keyframes tool-shimmer {
+	0% {
+		background-position: 200% center;
+	}
+	100% {
+		background-position: -200% center;
+	}
+}
+
+@keyframes tool-shimmer-slide {
+	0% {
+		transform: translateX(-100%);
+	}
+	100% {
+		transform: translateX(100%);
+	}
+}
+
+/* Hidden overrides */
+#attach-menu.hidden {
+	display: none;
+}
+
+#context-mini.hidden {
+	display: none;
+}
+
+/* Context color thresholds — @utility blocks */
+@utility ctx-green {
+	background: var(--color-brand-b);
+}
+@utility ctx-yellow {
+	background: var(--color-warning);
+}
+@utility ctx-red {
+	background: var(--color-brand-a);
+}
+
+/* Banner hidden state */
+.rewind-banner.hidden {
+	display: none;
+}
+
+/* Rewind point — toggled on arbitrary message elements, @utility block */
+@utility rewind-point {
+	outline: 2px solid var(--color-accent);
+	outline-offset: 2px;
+	border-radius: 8px;
+	cursor: pointer;
+	transition: outline-color 0.15s;
+}
+
+.rewind-point:hover {
+	outline-color: var(--color-accent-hover);
+	background: var(--color-accent-bg);
+}
+
+/* ─── Content Visibility Optimization ──────────────────────────────────────── */
+/* Tells the browser to skip rendering (layout, paint, style) for off-screen
+   message containers. The browser maintains scroll height via the intrinsic
+   size estimate. Unlike JS virtualization, elements remain in the DOM so
+   rewind mode, auto-scroll, and accessibility all work unchanged.
+
+   The `auto` keyword in contain-intrinsic-size tells the browser: "use 100px
+   as the initial estimate, but once you've rendered this element, remember its
+   actual size." This avoids layout shift after first render.
+
+   Browser support: Chrome 85+, Edge 85+, Firefox 125+, Safari 18+.
+   Older browsers ignore these properties (progressive enhancement). */
+/* content-visibility:auto was removed because Safari doesn't honor
+   contain-intrinsic-size:auto — elements collapse back to the 100px fallback
+   when they leave the viewport, shrinking scrollHeight during upward scrolling
+   and causing scroll snap-back. The rendering cost without it is negligible
+   for typical message lists (hundreds of messages). If very long sessions
+   become a performance concern, use DOM virtualization instead. */
+
+/* Dimmed elements in rewind mode — @utility block */
+@utility rewind-dimmed {
+	opacity: 0.5;
+	pointer-events: none;
+	transition: opacity 0.2s;
+}
+
+/* ─── Rewind Timeline Track (8.21) ─────────────────────────────────────────── */
+
+.rewind-timeline {
+	position: absolute;
+	right: 0;
+	width: 160px;
+	pointer-events: auto;
+	z-index: 20;
+	top: 0;
+	bottom: 0;
+}
+
+.rewind-timeline-track {
+	position: relative;
+	height: 100%;
+	border-left: 2px solid var(--color-border-subtle);
+	margin-left: 12px;
+}
+
+.rewind-timeline-viewport {
+	position: absolute;
+	left: -4px;
+	width: 8px;
+	background: rgba(var(--overlay-rgb), 0.15);
+	border-radius: 4px;
+	pointer-events: none;
+}
+
+.rewind-timeline-marker {
+	position: absolute;
+	left: 12px;
+	display: flex;
+	align-items: center;
+	gap: 0.375rem;
+	padding: 0.125rem 0.5rem;
+	font-size: 10px;
+	color: var(--color-text-dimmer);
+	cursor: pointer;
+	white-space: nowrap;
+	border-radius: 0.25rem;
+	transition:
+		background 0.15s,
+		color 0.15s;
+	transform: translateY(-50%);
+}
+
+.rewind-timeline-marker:hover {
+	background: rgba(var(--overlay-rgb), 0.04);
+	color: var(--color-text);
+}
+
+.rewind-timeline-marker.in-view {
+	color: var(--color-text-secondary);
+	font-weight: 500;
+}
+
+.marker-text {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	max-width: 120px;
+}
+
+/* Responsive: hide timeline on mobile */
+@media (max-width: 768px) {
+	.rewind-timeline {
+		display: none;
+	}
+}
+
+.notif-menu.hidden {
+	display: none;
+}
+
+/* Blocked hint hidden override */
+.notif-blocked-hint.hidden {
+	display: none;
+}
+
+/* ─── Split Diff View (8.20) ───────────────────────────────────────────────── */
+
+.diff-split-view {
+	overflow-x: auto;
+	font-family: var(--font-mono, ui-monospace, monospace);
+	font-size: 10px;
+	line-height: 1.5;
+	background: var(--color-code-bg);
+	border: 1px solid var(--color-border-subtle);
+	border-radius: 0.5rem;
+}
+.diff-table {
+	width: 100%;
+	border-collapse: collapse;
+	table-layout: fixed;
+}
+.diff-table td {
+	padding: 0 0.5rem;
+	white-space: pre;
+}
+.diff-ln {
+	width: 40px;
+	min-width: 40px;
+	text-align: right;
+	color: var(--color-text-dimmer);
+	user-select: none;
+	font-size: 10px;
+}
+.diff-ln-old {
+	border-right: 1px solid var(--color-border-subtle);
+}
+.diff-marker {
+	width: 20px;
+	min-width: 20px;
+	text-align: center;
+	font-weight: 600;
+	user-select: none;
+}
+.diff-code {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.diff-code-old {
+	border-right: 1px solid var(--color-border-subtle);
+}
+.diff-row.diff-add .diff-code-new {
+	color: var(--color-success);
+}
+.diff-row.diff-add .diff-marker-new {
+	color: var(--color-success);
+}
+.diff-row.diff-add {
+	background: color-mix(in srgb, var(--color-success) 8%, transparent);
+}
+.diff-row.diff-remove .diff-code-old {
+	color: var(--color-error);
+}
+.diff-row.diff-remove .diff-marker-old {
+	color: var(--color-error);
+}
+.diff-row.diff-remove {
+	background: color-mix(in srgb, var(--color-error) 8%, transparent);
+}
+.diff-row.diff-change .diff-code-old {
+	color: var(--color-error);
+}
+.diff-row.diff-change .diff-marker-old {
+	color: var(--color-error);
+}
+.diff-row.diff-change .diff-code-new {
+	color: var(--color-success);
+}
+.diff-row.diff-change .diff-marker-new {
+	color: var(--color-success);
+}
+.diff-row.diff-change {
+	background: rgba(var(--overlay-rgb), 0.05);
+}
+
+/* ─── Diff Toggle (8.20) ──────────────────────────────────────────────────── */
+
+.diff-container {
+	margin: 0.5rem 0;
+}
+.diff-toggle-bar {
+	display: flex;
+	gap: 0.25rem;
+	margin-bottom: 0.5rem;
+}
+.diff-toggle-btn {
+	padding: 0.25rem 0.75rem;
+	font-size: 10px;
+	border: 1px solid var(--color-border-subtle);
+	background: transparent;
+	color: var(--color-text-secondary);
+	border-radius: 0.25rem;
+	cursor: pointer;
+}
+.diff-toggle-btn.active {
+	background: var(--color-accent);
+	color: var(--color-bg);
+	border-color: var(--color-accent);
+}
+.diff-toggle-btn:hover:not(.active) {
+	background: var(--color-bg-alt);
+}
+
+/* ─── File Edit History & Compare (8.23) ──────────────────────────────────── */
+
+.file-history-panel {
+	scrollbar-width: thin;
+	scrollbar-color: rgba(var(--overlay-rgb), 0.15) transparent;
+}
+
+.file-history-entry {
+	border: 1px solid transparent;
+	transition:
+		background 0.15s,
+		border-color 0.15s;
+}
+.file-history-entry:hover {
+	background: rgba(var(--overlay-rgb), 0.04);
+	border-color: var(--color-border-subtle);
+}
+
+.file-history-badge {
+	display: inline-block;
+	font-size: 10px;
+	font-weight: 600;
+	text-transform: uppercase;
+	padding: 0.125rem 0.375rem;
+	border-radius: 3px;
+	line-height: 1.4;
+}
+
+.file-history-compare-bar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.5rem;
+	padding: 0.5rem;
+	background: var(--color-bg-alt);
+	border: 1px solid var(--color-border-subtle);
+	border-radius: 0.375rem;
+}
+
+.file-history-compare-btn {
+	padding: 0.25rem 0.75rem;
+	font-size: 10px;
+	font-weight: 500;
+	border-radius: 0.375rem;
+	background: var(--color-success);
+	color: var(--color-bg);
+	border: none;
+	cursor: pointer;
+	transition: opacity 0.15s;
+}
+.file-history-compare-btn:hover {
+	opacity: 0.85;
+}
+
+.file-history-view {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+	background: var(--color-bg-surface);
+	border: 1px solid var(--color-border-subtle);
+	border-radius: 0.5rem;
+	padding: 0.75rem;
+}
+
+/* ─── Mobile PWA polish ────────────────────────────────────────────────────── */
+/* iOS safe-area insets are applied inline on Header/Sidebar/InputArea and the
+   terminal touch toolbar. These rules widen primary tap targets to the 44px
+   platform minimum on touch-sized viewports and prevent the header/composer
+   controls from overflowing narrow (<=390px) screens. */
+
+@media (max-width: 768px) {
+	/* Primary header controls */
+	.header-icon-btn {
+		min-width: 44px;
+		min-height: 44px;
+	}
+
+	/* Composer primary controls */
+	#attach-btn,
+	#send,
+	#stop,
+	#mic,
+	#system-prompt-btn,
+	#queue {
+		min-width: 44px;
+		min-height: 44px;
+	}
+
+	/* Terminal tab bar controls */
+	.term-tab {
+		min-height: 44px;
+	}
+	.term-tab-close {
+		width: 32px;
+		height: 32px;
+	}
+
+	/* Tighten header control spacing so touch targets fit */
+	#header-right {
+		gap: 0.125rem;
+	}
+}
+
+@media (max-width: 390px) {
+	/* Very narrow: tighten the header and let composer control rows wrap */
+	#header {
+		padding-left: 0.5rem;
+		padding-right: 0.5rem;
+	}
+	#header-project-scroll {
+		min-width: 0;
+	}
+	#input-bottom {
+		row-gap: 0.375rem;
+	}
+}

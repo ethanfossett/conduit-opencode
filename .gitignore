@@ -1,0 +1,19 @@
+node_modules/
+dist/
+*.tsbuildinfo
+test-results/.playwright-artifacts-0
+.env
+.worktrees/
+.playwright-cli
+.conduit/sessions
+/test-results
+docs/plans/audits/
+/test-debug
+media/_video_tmp/
+media/_debug/
+media/_test_output/
+
+
+# Local STT toolchain + data (not part of the distributable package)
+/vendor/
+/var/

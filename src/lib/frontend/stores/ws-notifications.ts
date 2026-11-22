@@ -1,0 +1,212 @@
+// ─── WebSocket Notification Logic ────────────────────────────────────────────
+// Extracted from ws.svelte.ts — handles sound/browser notifications when the
+// tab is hidden and a notable event arrives, plus push-active tracking.
+
+import { notificationContent } from "../../notification-content.js";
+import type { RelayMessage } from "../types.js";
+import { NOTIFICATION_DISMISS_MS } from "../ui-constants.js";
+import { getNotifSettings } from "../utils/notif-settings.js";
+import { playDoneSound } from "../utils/sound.js";
+import { getCurrentSlug, navigate } from "./router.svelte.js";
+
+// ─── Push-active tracking ────────────────────────────────────────────────────
+// When push notifications are active, browser alerts are suppressed (the SW
+// handles it via push). Set by NotifSettings.svelte on toggle.
+//
+// IMPORTANT: Must start as `false`, not read from localStorage. The push
+// subscription is NOT automatically re-established on page load — it requires
+// the user to toggle it in NotifSettings, which calls setPushActive(true)
+// only after the service worker subscription succeeds. Reading `push: true`
+// from localStorage would suppress browser notifications even though no SW
+// subscription is actually active, creating a dead zone where neither
+// browser nor push notifications fire.
+
+let _pushActive = false;
+
+/** Mark push notifications as active/inactive. Called by NotifSettings. */
+export function setPushActive(active: boolean): void {
+	_pushActive = active;
+}
+
+/** Check if push notifications are currently active. */
+export function isPushActive(): boolean {
+	return _pushActive;
+}
+
+// ─── Session navigation callback ─────────────────────────────────────────────
+// Registered by ChatLayout so notification clicks can switch to the correct
+// session without a circular dependency on session/router modules.
+
+let _navigateToSession: ((sessionId: string) => void) | null = null;
+
+/**
+ * Register a callback to navigate to a session when a notification is clicked.
+ * Called by ChatLayout during initialization.
+ */
+export function onNavigateToSession(fn: (sessionId: string) => void): void {
+	_navigateToSession = fn;
+}
+
+/**
+ * Clear the navigation callback (for cleanup on unmount).
+ */
+export function clearNavigateToSession(): void {
+	_navigateToSession = null;
+}
+
+// ─── Service worker message listener ─────────────────────────────────────────
+// The SW posts a `navigate_to_session` message when a push notification is
+// clicked. This listener routes it to the registered callback.
+
+let _swListenerRegistered = false;
+
+/**
+ * Register the service worker message listener for push notification clicks.
+ * Safe to call multiple times — only registers once.
+ */
+export function initSWNavigationListener(): void {
+	if (
+		_swListenerRegistered ||
+		typeof navigator === "undefined" ||
+		!("serviceWorker" in navigator)
+	)
+		return;
+
+	_swListenerRegistered = true;
+	navigator.serviceWorker.addEventListener("message", (event) => {
+		if (event.data?.type !== "navigate_to_session") return;
+		const { sessionId, slug, url } = event.data as {
+			sessionId?: string;
+			slug?: string;
+			url?: string;
+		};
+		const currentSlug = getCurrentSlug();
+		if (sessionId && _navigateToSession && (!slug || slug === currentSlug)) {
+			_navigateToSession(sessionId);
+			return;
+		}
+		// The dashboard has no chat callback. Cross-project notifications must
+		// update the router with a pathname, never an absolute URL.
+		if (url?.startsWith("/") && !url.startsWith("//")) {
+			navigate(url);
+		} else if (url && typeof window !== "undefined") {
+			try {
+				const target = new URL(url, window.location.href);
+				if (target.origin === window.location.origin)
+					navigate(target.pathname + target.search + target.hash);
+			} catch {
+				/* Ignore malformed notification targets. */
+			}
+		}
+	});
+}
+
+// ─── Notification triggers ───────────────────────────────────────────────────
+// Fire sound and/or browser alert when a notable event arrives.
+// Both fire regardless of tab visibility — the user wants to know when a
+// task finishes whether or not they're looking at the relay tab.
+
+export const NOTIF_TYPES = new Set([
+	"done",
+	"error",
+	"permission_request",
+	"ask_user",
+]);
+
+/** Fallback: show a browser Notification API alert (no reliable tab switching). */
+function showBrowserNotification(
+	content: { title: string; body: string; tag: string },
+	sessionId: string | undefined,
+): void {
+	try {
+		const n = new Notification(content.title, {
+			body: content.body,
+			tag: content.tag,
+		});
+		n.onclick = () => {
+			window.focus();
+			if (sessionId) {
+				_navigateToSession?.(sessionId);
+			}
+			n.close();
+		};
+		setTimeout(() => n.close(), NOTIFICATION_DISMISS_MS);
+	} catch {
+		// Non-fatal: Notification API may not be available
+	}
+}
+
+export function triggerNotifications(msg: RelayMessage): void {
+	if (!NOTIF_TYPES.has(msg.type)) return;
+
+	const settings = getNotifSettings();
+
+	// Sound — plays regardless of tab visibility
+	if (settings.sound) {
+		playDoneSound();
+	}
+
+	// Browser alert — fires regardless of tab visibility.
+	// When push is active, skip browser alerts ONLY if the service worker
+	// registration is still alive. If the SW was unregistered or the
+	// subscription expired, fall through to browser alerts as a safety net
+	// so the user isn't left in a dead zone where neither path fires.
+	const suppressForPush = _pushActive;
+	if (_pushActive && "serviceWorker" in navigator) {
+		navigator.serviceWorker
+			.getRegistration()
+			.then((reg) => {
+				if (!reg) {
+					// SW gone — push can't deliver. Reset the flag so future
+					// notifications fall through to browser alerts immediately.
+					_pushActive = false;
+				}
+			})
+			.catch(() => {
+				/* non-fatal */
+			});
+	}
+	if (settings.browser && !suppressForPush) {
+		const content = notificationContent(msg);
+		if (
+			content &&
+			typeof Notification !== "undefined" &&
+			Notification.permission === "granted"
+		) {
+			// Extract sessionId from the message for click-to-session navigation
+			const sessionId =
+				"sessionId" in msg
+					? (msg as { sessionId?: string }).sessionId
+					: undefined;
+
+			// Prefer SW showNotification — its notificationclick handler uses
+			// client.focus() which reliably switches Chrome tabs. The browser
+			// Notification API's window.focus() only brings the window to
+			// front without switching tabs, so clicking a notification may
+			// land on the wrong tab (e.g. the OpenCode UI at :4096).
+			if ("serviceWorker" in navigator) {
+				navigator.serviceWorker
+					.getRegistration()
+					.then((reg) => {
+						if (reg) {
+							reg.showNotification(content.title, {
+								body: content.body,
+								tag: content.tag,
+								data: {
+									type: msg.type,
+									...(sessionId != null ? { sessionId } : {}),
+								},
+							});
+						} else {
+							showBrowserNotification(content, sessionId);
+						}
+					})
+					.catch(() => {
+						showBrowserNotification(content, sessionId);
+					});
+			} else {
+				showBrowserNotification(content, sessionId);
+			}
+		}
+	}
+}

@@ -1,0 +1,5 @@
+# Explicit dependency build policy for the pinned pnpm version.
+allowBuilds:
+  '@evilmartians/lefthook': true
+  esbuild: true
+  sharp: false
