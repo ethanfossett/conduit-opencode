@@ -34,7 +34,7 @@ Run `pnpm check`, `pnpm lint`, `pnpm test:unit`, and `pnpm build` from this chec
 
 - Live loopback preview against OpenCode 2.3.2. The NodeCode card found an existing connection and the short inference test succeeded.
 - A mobile-sized Chromium session created a new Cyber v1 chat, received a real streamed response, and restored the conversation after reload. Physical iPhone acceptance is still outstanding.
-- The isolated Chat runtime replied through the existing NodeCode account in a mobile-sized Chromium preview. The same preview verified search failed closed with Mullvad disconnected and a temporary transcript was absent after reload and on disk.
+- The isolated Chat runtime replied through the existing NodeCode account in a mobile-sized Chromium preview. The same preview verified search failed closed with Mullvad disconnected and a temporary transcript was absent after reload and on disk. A locally built worker container also returned HTTP 503 with its network disconnected. The desktop and mobile Chromium regression run passed all 56 Chat, recovery, and terminal cases.
 
 ## Running the projectless Chat preview
 

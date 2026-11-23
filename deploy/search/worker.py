@@ -5,7 +5,9 @@ import ipaddress
 import json
 import os
 import re
+import signal
 import subprocess
+import sys
 import threading
 from html import unescape
 from html.parser import HTMLParser
@@ -212,4 +214,5 @@ if __name__ == "__main__":
     search_key = os.environ.get("BRAVE_SEARCH_API_KEY", "")
     if not re.fullmatch(r"[0-9a-f]{64}", worker_token) or not re.fullmatch(r"[A-Za-z0-9_.-]{8,256}", search_key):
         raise SystemExit("Set a random 64-character hex worker token and the Brave Search API key.")
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     serve(worker_token, search_key, os.environ.get("CONDUIT_CHAT_SEARCH_BIND", "127.0.0.1"))
