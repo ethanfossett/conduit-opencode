@@ -1,14 +1,38 @@
 <script lang="ts">
 	import { onMount, tick } from "svelte";
-	import type { ChatAttachment, ChatConversation, ChatSearchResult } from "../../chat/types.js";
+	import type { ChatAttachment, ChatConversation, ChatSearchResult, ChatSummary, ChatTurnRequest } from "../../chat/types.js";
 	import { clearAcceptedDraft, draftKey, loadDraft, saveDraft } from "../utils/drafts.js";
 	import { renderMarkdown } from "../utils/markdown.js";
 	import { stageChatHandoff } from "../stores/chat-handoff.svelte.js";
 	import type { ProjectsListResponse } from "../../shared-types.js";
 	import { navigate } from "../stores/router.svelte.js";
 
-	type Summary = Pick<ChatConversation, "id" | "title" | "updatedAt">;
-	let conversations = $state<Summary[]>([]);
+	class ChatApiError extends Error {
+		readonly status: number;
+		constructor(status: number, message: string) {
+			super(message);
+			this.status = status;
+		}
+	}
+	let turnsEnabled = $state(false);
+	let inboxQuery = $state("");
+	let appliedInboxQuery = $state("");
+	let showArchived = $state(false);
+	let showManage = $state(false);
+	let titleDraft = $state("");
+	let editFrom = $state<number | null>(null);
+	let previousDraft: {
+		text: string;
+		attachments: ChatAttachment[];
+		showSearch: boolean;
+		searchQuery: string;
+		searchResult: ChatSearchResult | null;
+		includeSources: boolean;
+	} | null = null;
+	let refreshingId: string | null = null;
+	let offline = $state(false);
+	let feedback = $state("");
+	let conversations = $state<ChatSummary[]>([]);
 	let chat = $state<ChatConversation | null>(null);
 	let text = $state("");
 	let attachments = $state<ChatAttachment[]>([]);
@@ -33,6 +57,12 @@
 		ALLOW_DATA_ATTR: false,
 		ALLOW_ARIA_ATTR: false,
 	};
+	const sending = $derived(chat?.turn?.status === "running");
+	const lastPrompt = $derived(chat?.messages.map(({ role }) => role).lastIndexOf("user") ?? -1);
+	const visibleMessages = $derived(sending && chat?.turn?.replaceFrom !== undefined
+		? chat.messages.slice(0, chat.turn.replaceFrom) : chat?.messages ?? []);
+	const visibleInbox = $derived(conversations.filter((item) =>
+		appliedInboxQuery || !!item.archived === showArchived));
 	const storageKey = $derived(chat && !chat.temporary ? draftKey("conversation", chat.id) : null);
 
 	async function api<T>(path = "", method = "GET", data?: unknown): Promise<T> {
@@ -46,20 +76,147 @@
 			throw new Error("Sign in again to open Chat.");
 		}
 		const result = await response.json();
-		if (!response.ok) throw new Error(result.message ?? "Chat is unavailable.");
+		if (!response.ok) throw new ChatApiError(response.status, result.message ?? "Chat is unavailable.");
 		return result as T;
 	}
 
-	async function refresh() {
-		const result = await api<{enabled: boolean; searchEnabled: boolean; conversations: Summary[]}>();
+	async function refresh(query = appliedInboxQuery) {
+		const result = await api<{enabled: boolean; searchEnabled: boolean; turnsEnabled?: boolean; conversations: ChatSummary[]}>(query ? `?q=${encodeURIComponent(query)}` : "");
 		enabled = result.enabled;
 		searchEnabled = result.searchEnabled;
+		turnsEnabled = result.turnsEnabled ?? false;
 		conversations = result.conversations;
+		appliedInboxQuery = query;
 	}
+
+	function searchInbox(event: SubmitEvent) {
+		event.preventDefault();
+		void run(() => refresh(inboxQuery.trim()));
+	}
+
+	function clearInboxSearch() {
+		inboxQuery = "";
+		void run(() => refresh(""));
+	}
+
+	function updateMetadata(changes: { title?: string; pinned?: boolean; archived?: boolean }) {
+		const id = chat?.id;
+		if (!id || sending) return;
+		void run(async () => {
+			chat = await api<ChatConversation>(`/${id}/metadata`, "POST", changes);
+			titleDraft = chat.title;
+			if (changes.archived !== undefined) showArchived = changes.archived;
+			await refresh();
+		});
+	}
+
+	function branch(through: number) {
+		const id = chat?.id;
+		if (!id || sending) return;
+		void run(async () => {
+			display(await api<ChatConversation>("", "POST", { branch: { id, through } }));
+			inboxQuery = "";
+			showArchived = false;
+			await refresh("");
+		});
+	}
+
+	function exportChat() {
+		if (!chat) return;
+		const { title, messages } = chat;
+		const url = URL.createObjectURL(new Blob([JSON.stringify({ title, messages }, null, 2)], { type: "application/json" }));
+		const link = document.createElement("a");
+		link.href = url;
+		link.download = `${title.replace(/[^\p{L}\p{N} ._-]/gu, "_").slice(0, 80) || "chat"}.json`;
+		document.body.append(link);
+		link.click();
+		link.remove();
+		setTimeout(() => URL.revokeObjectURL(url), 500);
+	}
+
+	async function copy(text: string) {
+		try {
+			await navigator.clipboard.writeText(text);
+			feedback = "Copied";
+		} catch {
+			feedback = "Could not copy this text.";
+		}
+	}
+
+	function pendingKey(id: string) {
+		return `${draftKey("conversation", id)}:submitted`;
+	}
+
+	function readPending(conversation: ChatConversation): { requestId: string; text: string } | null {
+		if (conversation.temporary) return null;
+		try {
+			return JSON.parse(loadDraft(pendingKey(conversation.id)) || "null");
+		} catch {
+			return null;
+		}
+	}
+
+	function acknowledge(conversation: ChatConversation) {
+		const pending = readPending(conversation);
+		if (!pending || !conversation.receipts?.includes(pending.requestId)) return;
+		const key = draftKey("conversation", conversation.id);
+		clearAcceptedDraft(key, pending.text);
+		saveDraft(pendingKey(conversation.id), "");
+		if (editFrom === null && text === pending.text) text = "";
+	}
+
+	async function reconcile(id: string, incremental = false) {
+		if (refreshingId || busy || !turnsEnabled || chat?.id !== id) return;
+		refreshingId = id;
+		const original = chat;
+		try {
+			const following = !scroll || scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 120;
+			const wasRunning = original.turn?.status === "running";
+			if (incremental && original.turn) {
+				const { running } = await api<{ running: { id: string; reply?: string } | null }>(`/${id}/turns`);
+				if (chat !== original) return;
+				if (running && running.id === original.turn.id) {
+					if (running.reply !== original.turn.reply) {
+						if (running.reply) original.turn.reply = running.reply;
+						if (following) await scrollToLatest();
+					}
+					offline = false;
+					return;
+				}
+			}
+			const updated = await api<ChatConversation>(`/${id}`);
+			if (chat !== original) return;
+			acknowledge(updated);
+			chat = updated;
+			offline = false;
+			if (following && (wasRunning || updated.turn?.status === "running")) await scrollToLatest();
+			if (wasRunning && updated.turn?.status !== "running" && !updated.temporary) await refresh();
+		} catch {
+			if (chat?.id === id) offline = true;
+		} finally {
+			refreshingId = null;
+		}
+	}
+
+	$effect(() => {
+		const id = chat?.turn?.status === "running" ? chat.id : undefined;
+		if (!id) return;
+		const timer = setInterval(() => {
+			if (!document.hidden) void reconcile(id, true);
+		}, 500);
+		return () => clearInterval(timer);
+	});
 
 	function display(conversation: ChatConversation | null) {
 		chat = conversation;
+		showManage = false;
+		titleDraft = conversation?.title ?? "";
+		editFrom = null;
+		previousDraft = null;
+		offline = false;
+		feedback = "";
 		text = conversation && !conversation.temporary ? loadDraft(draftKey("conversation", conversation.id)) : "";
+		if (conversation) acknowledge(conversation);
 		attachments = [];
 		confirmDelete = false;
 		resetSearch();
@@ -99,12 +256,25 @@
 				loading = false;
 			}
 		});
+		const recover = () => {
+			if (chat && !document.hidden) void reconcile(chat.id);
+		};
+		window.addEventListener("online", recover);
+		window.addEventListener("pageshow", recover);
+		document.addEventListener("visibilitychange", recover);
+		return () => {
+			window.removeEventListener("online", recover);
+			window.removeEventListener("pageshow", recover);
+			document.removeEventListener("visibilitychange", recover);
+		};
 	});
 
 	function create(temporary: boolean) {
 		void run(async () => {
 			display(await api<ChatConversation>("", "POST", { temporary }));
-			await refresh();
+			inboxQuery = "";
+			showArchived = false;
+			await refresh("");
 		});
 	}
 
@@ -187,19 +357,87 @@
 		navigate(`/p/${encodeURIComponent(handoffProject)}/`);
 	}
 
+	function beginEdit(index: number) {
+		const message = chat?.messages[index];
+		if (!message || index !== lastPrompt || sending) return;
+		previousDraft = { text, attachments, showSearch, searchQuery, searchResult, includeSources };
+		editFrom = index;
+		text = message.text;
+		resetSearch();
+		attachments = [];
+		document.getElementById("chat-message")?.focus();
+	}
+
+	function endEdit() {
+		if (editFrom === null || !previousDraft) return;
+		editFrom = null;
+		({ text, attachments, showSearch, searchQuery, searchResult, includeSources } = previousDraft);
+		previousDraft = null;
+	}
+
+	function runTurn(request: Omit<ChatTurnRequest, "requestId">, submitted?: string) {
+		const conversation = chat;
+		if (!conversation || sending) return;
+		const pending = readPending(conversation);
+		const requestId = submitted !== undefined && pending?.text === submitted
+			? pending.requestId : crypto.randomUUID();
+		void run(async () => {
+			if (submitted !== undefined && !conversation.temporary) {
+				saveDraft(pendingKey(conversation.id), JSON.stringify({ requestId, text: submitted }));
+			}
+			try {
+				chat = await api<ChatConversation>(`/${conversation.id}/turns`, "POST", { requestId, ...request });
+			} catch (err) {
+				if (err instanceof ChatApiError && err.status < 500 && err.status !== 409 && submitted !== undefined && !conversation.temporary) {
+					saveDraft(pendingKey(conversation.id), "");
+				}
+				throw err;
+			}
+			acknowledge(chat);
+			if (editFrom !== null) {
+				endEdit();
+			} else if (submitted !== undefined) {
+				text = "";
+				attachments = [];
+				resetSearch();
+			}
+			await scrollToLatest();
+			if (!chat.turn && !chat.temporary) await refresh();
+		}).finally(() => {
+			if (chat?.id === conversation.id) void reconcile(conversation.id);
+		});
+	}
+
+	function stop() {
+		const current = chat;
+		if (!current?.turn || !sending) return;
+		void run(async () => {
+			chat = await api<ChatConversation>(`/${current.id}/turns/stop`, "POST", { requestId: current.turn?.id });
+			if (!chat.temporary) await refresh();
+		});
+	}
+
 	function send(event: SubmitEvent) {
 		event.preventDefault();
 		const conversation = chat;
 		const prompt = text.trim();
-		if (!conversation || !prompt || busy || showHandoff) return;
+		if (!conversation || !prompt || busy || sending || showHandoff) return;
+		const submission = {
+			text: prompt,
+			...(attachments.length ? { attachments } : {}),
+			...(includeSources && searchResult && { searchId: searchResult.id }),
+		};
+		if (turnsEnabled) {
+			runTurn({
+				...submission,
+				...(editFrom !== null && { editFrom }),
+			}, editFrom === null ? text : undefined);
+			return;
+		}
 		const submitted = text;
 		const draft = storageKey;
 		void run(async () => {
-			const result = await api<ChatConversation>(`/${conversation.id}`, "POST", {
-				text: prompt,
-				...(attachments.length ? { attachments } : {}),
-				...(includeSources && searchResult && { searchId: searchResult.id }),
-			});
+			const result = await api<ChatConversation>(`/${conversation.id}`, "POST", submission);
 			chat = result;
 			if (draft) clearAcceptedDraft(draft, submitted);
 			text = "";
@@ -209,6 +447,7 @@
 			await scrollToLatest();
 		});
 	}
+
 </script>
 
 <div class="flex h-dvh min-h-0 flex-col bg-bg text-text">
@@ -233,9 +472,21 @@
 					<button type="button" class="rounded-lg bg-accent px-3 py-2 text-bg disabled:opacity-50" disabled={busy} onclick={() => create(false)}>New chat</button>
 					<button type="button" class="rounded-lg border border-border px-3 py-2 disabled:opacity-50" disabled={busy} onclick={() => create(true)}>Temporary chat</button>
 				</div>
+				{#if turnsEnabled}
+					<form class="flex gap-1" aria-label="Search saved chats" onsubmit={searchInbox}>
+						<input type="search" aria-label="Search chat history" placeholder="Search chats" maxlength="240" bind:value={inboxQuery} class="min-w-0 flex-1 rounded border border-border bg-bg-surface px-2 py-1 text-base" />
+						<button type="submit" class="rounded border border-border px-2 text-xs" disabled={busy}>Search</button>
+					</form>
+					{#if appliedInboxQuery}
+						<button type="button" class="self-start text-xs underline" disabled={busy} onclick={clearInboxSearch}>Clear search</button>
+					{:else}
+						<button type="button" class="self-start text-xs underline" onclick={() => (showArchived = !showArchived)}>{showArchived ? "Show inbox" : "Show archive"}</button>
+					{/if}
+				{/if}
 				<ul class="space-y-1" aria-label="Conversations">
-					{#each conversations as summary (summary.id)}
-						<li><button type="button" class="w-full truncate rounded-md px-2 py-1 text-left text-sm hover:bg-bg-alt" class:bg-bg-alt={chat?.id === summary.id} disabled={busy} onclick={() => select(summary.id)}>{summary.title}</button></li>
+					{#if appliedInboxQuery && visibleInbox.length === 0}<li class="text-xs text-text-muted">No matching conversations.</li>{/if}
+					{#each visibleInbox as summary (summary.id)}
+						<li><button type="button" class="w-full truncate rounded-md px-2 py-1 text-left text-sm hover:bg-bg-alt" class:bg-bg-alt={chat?.id === summary.id} disabled={busy} onclick={() => select(summary.id)}>{summary.pinned ? "📌 " : ""}{summary.title}</button></li>
 					{/each}
 				</ul>
 			</aside>
@@ -243,6 +494,12 @@
 				{#if chat}
 					<div class="flex flex-wrap justify-between gap-2 border-b border-border px-4 py-2 text-xs text-text-muted">
 						<span>{chat.temporary ? "Temporary · erased on relay restart or after 1 hour idle" : chat.title}</span>
+						{#if turnsEnabled && !chat.temporary}
+							<button type="button" class="underline" disabled={busy || sending} aria-expanded={showManage} onclick={() => {
+								titleDraft = chat?.title ?? "";
+								showManage = !showManage;
+							}}>Manage chat</button>
+						{/if}
 						{#if confirmDelete}
 							<button type="button" class="text-error underline" disabled={busy} onclick={() => void run(async () => {
 								if (!chat) return;
@@ -253,12 +510,26 @@
 							})}>Confirm delete</button>
 							<button type="button" class="underline" onclick={() => (confirmDelete = false)}>Cancel</button>
 						{:else}
-							<button type="button" class="underline" disabled={busy} onclick={() => (confirmDelete = true)}>Delete chat</button>
+							<button type="button" class="underline" disabled={busy || sending} onclick={() => (confirmDelete = true)}>Delete chat</button>
 						{/if}
 					</div>
+					{#if showManage && turnsEnabled && !chat.temporary}
+						<div class="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2 text-xs">
+							<form class="flex flex-1 gap-2" onsubmit={(event) => {
+								event.preventDefault();
+								updateMetadata({ title: titleDraft });
+							}}>
+								<input aria-label="Conversation title" class="min-w-0 flex-1 rounded border border-border bg-bg-surface px-2 py-1 text-base" maxlength="120" bind:value={titleDraft} disabled={busy || sending} />
+								<button type="submit" class="underline" disabled={busy || sending || !titleDraft.trim()}>Rename</button>
+							</form>
+							<button type="button" class="underline" disabled={busy || sending} onclick={() => updateMetadata({ pinned: !chat?.pinned })}>{chat.pinned ? "Unpin" : "Pin"}</button>
+							<button type="button" class="underline" disabled={busy || sending} onclick={() => updateMetadata({ archived: !chat?.archived })}>{chat.archived ? "Restore" : "Archive"}</button>
+							<button type="button" class="underline" onclick={exportChat}>Export JSON</button>
+						</div>
+					{/if}
 					<div bind:this={scroll} class="min-h-0 flex-1 overflow-auto px-4 py-5" role="log" aria-label="Messages">
 						<div class="mx-auto max-w-2xl space-y-5">
-							{#each chat.messages as message}
+							{#each visibleMessages as message, index}
 								<div class="break-words rounded-xl px-4 py-3 text-sm" class:bg-bg-alt={message.role === "user"}>
 									<span class="mb-1 block text-xs font-medium text-text-muted">{message.role === "user" ? "You" : "Cyber v1"}</span>
 									{#if message.role === "assistant"}
@@ -276,10 +547,39 @@
 											{/each}
 										</ol>
 									{/if}
-									<button type="button" class="mt-2 text-xs text-text-muted underline" disabled={busy} onclick={() => prepareHandoff(message.text)}>Continue in Code</button>
+									<div class="mt-2 flex flex-wrap gap-3 text-xs text-text-muted">
+										<button type="button" class="underline" onclick={() => copy(message.text)}>Copy</button>
+										<button type="button" class="underline" disabled={busy || sending} onclick={() => prepareHandoff(message.text)}>Continue in Code</button>
+										{#if turnsEnabled && index === lastPrompt && message.role === "user"}
+											<button type="button" class="underline" disabled={busy || sending || editFrom !== null} onclick={() => beginEdit(index)}>Edit prompt</button>
+										{/if}
+										{#if turnsEnabled && message.role === "assistant"}
+											{#if index === visibleMessages.length - 1}
+												<button type="button" class="underline" disabled={busy || sending || editFrom !== null} onclick={() => runTurn({ regenerate: true })}>Regenerate</button>
+											{/if}
+											{#if !chat.temporary}
+												<button type="button" class="underline" disabled={busy || sending} onclick={() => branch(index + 1)}>Branch from reply</button>
+											{/if}
+										{/if}
+									</div>
 								</div>
 							{/each}
-							{#if busy}<p class="text-sm text-text-muted">Working…</p>{/if}
+							{#if chat.turn}
+								<div class="rounded-xl bg-bg-alt px-4 py-3 text-sm">
+									<span class="mb-1 block text-xs font-medium text-text-muted">{chat.turn.replaceFrom === undefined ? "You" : "Revised turn"}</span>
+									<p class="whitespace-pre-wrap break-words">{chat.turn.prompt.text}</p>
+								</div>
+								<div class="space-y-2 px-4 py-3 text-sm">
+									{#if chat.turn.reply}<div class="md-content overflow-x-auto leading-relaxed">{@html renderMarkdown(chat.turn.reply, chatMarkdown)}</div>{/if}
+									{#if sending}
+										<span class="text-text-muted">{offline ? "Reconnecting…" : "Cyber v1 is replying…"}</span>
+										<button type="button" class="ms-2 underline" disabled={busy} onclick={stop}>Stop</button>
+									{:else}
+										<span>{chat.turn.error ?? "Reply stopped."}</span>
+										<button type="button" class="ms-2 underline" disabled={busy || editFrom !== null} onclick={() => runTurn({ retry: true })}>Retry reply</button>
+									{/if}
+								</div>
+							{:else if busy}<p class="text-sm text-text-muted">Working…</p>{/if}
 						</div>
 					</div>
 					{#if showHandoff}
@@ -340,9 +640,12 @@
 						</section>
 					{/if}
 					<form class="mx-auto w-full max-w-2xl space-y-2 p-4" onsubmit={send}>
+						{#if editFrom !== null}
+							<p class="flex justify-between text-xs text-text-muted">Editing the latest prompt <button type="button" class="underline" onclick={endEdit}>Cancel edit</button></p>
+						{/if}
 						<label class="sr-only" for="chat-message">Message</label>
-						<textarea id="chat-message" placeholder="Message Cyber v1" maxlength="24000" rows="3" disabled={busy} bind:value={text} oninput={(event) => {
-							if (storageKey) saveDraft(storageKey, event.currentTarget.value);
+						<textarea id="chat-message" placeholder="Message Cyber v1" maxlength="24000" rows="3" disabled={busy || sending} bind:value={text} oninput={(event) => {
+							if (storageKey && editFrom === null) saveDraft(storageKey, event.currentTarget.value);
 						}} class="w-full resize-y rounded-xl border border-border bg-bg-surface p-3 text-base"></textarea>
 						{#if attachments.length}
 							<ul class="flex flex-wrap gap-2 text-xs" aria-label="Attachments">
@@ -359,7 +662,7 @@
 									else showSearch = true;
 								}}>Web search</button>
 							{/if}
-							<button type="submit" disabled={busy || showHandoff || !text.trim()} class="rounded-lg bg-accent px-4 py-2 text-bg disabled:opacity-50">Send</button>
+							<button type="submit" disabled={busy || sending || showHandoff || !text.trim()} class="rounded-lg bg-accent px-4 py-2 text-bg disabled:opacity-50">{editFrom === null ? "Send" : "Send edit"}</button>
 						</div>
 						<p class="text-xs text-text-muted">NodeCode receives the message, recent context, and any files you attach.</p>
 					</form>
@@ -369,6 +672,7 @@
 						<p class="mt-2 text-sm text-text-muted">Start a conversation or pick one from your inbox.</p>
 					</div>
 				{/if}
+				<span class="sr-only" role="status">{feedback}</span>
 				{#if error}<p class="px-4 pb-3 text-sm text-error" role="alert">{error}</p>{/if}
 			</main>
 		</div>

@@ -1725,6 +1725,7 @@ export class OpenCodeClient {
 	async generateText(
 		model: { providerID: string; modelID: string },
 		prompt: string,
+		signal?: AbortSignal,
 	): Promise<string> {
 		const res = await this.request(
 			"POST",
@@ -1733,7 +1734,7 @@ export class OpenCodeClient {
 				model: { providerID: model.providerID, id: model.modelID },
 				prompt,
 			},
-			undefined,
+			signal,
 			0,
 		);
 		return unwrapData<{ text?: string }>(res)?.text ?? "";

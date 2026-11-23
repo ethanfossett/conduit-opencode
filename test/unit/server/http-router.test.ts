@@ -1050,3 +1050,128 @@ describe("Chat private search", () => {
 		}
 	});
 });
+
+describe("durable Chat turns and inbox", () => {
+	it("accepts a turn once, reports partial text, and stops without replacing history", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "conduit-chat-turn-"));
+		const generate = vi.fn(
+			async (
+				_input: string,
+				signal: AbortSignal,
+				onText: (text: string) => void,
+			) => {
+				onText("Visible partial reply");
+				return new Promise<string>((_, reject) =>
+					signal.addEventListener("abort", () => reject(new Error("Stopped")), {
+						once: true,
+					}),
+				);
+			},
+		);
+		const chat = new ChatService(directory, generate);
+		const app = createTestServer({ chat });
+		await app.start();
+		try {
+			const item = await chat.create(false);
+			const root = `/api/chat/${item.id}`;
+			const post = (path: string, body: unknown) =>
+				fetch(app.url(path), {
+					method: "POST",
+					headers: {
+						"X-Conduit-Chat": "1",
+						"Content-Type": "application/json",
+					},
+					body: JSON.stringify(body),
+				});
+			const requestId = "aaaabbbb-cccc-dddd-eeee-ffffffffffff";
+			const accepted = await post(`${root}/turns`, {
+				requestId,
+				text: "Recoverable prompt",
+			});
+			expect(accepted.status).toBe(202);
+			expect((await accepted.json()).turn.id).toBe(requestId);
+			await post(`${root}/turns`, { requestId, text: "Recoverable prompt" });
+			expect(generate).toHaveBeenCalledTimes(1);
+			const progress = await (await fetch(app.url(root))).json();
+			expect(progress.turn).toMatchObject({
+				status: "running",
+				reply: "Visible partial reply",
+			});
+
+			const status = await (await fetch(app.url(`${root}/turns`))).json();
+			expect(status).toEqual({
+				running: { id: requestId, reply: "Visible partial reply" },
+			});
+
+			const restarted = new ChatService(directory, generate);
+			expect((await restarted.get(item.id)).turn?.status).toBe("failed");
+			const stopped = await (
+				await post(`${root}/turns/stop`, { requestId })
+			).json();
+			expect(stopped.messages).toEqual([]);
+			expect(stopped.turn).toMatchObject({
+				status: "stopped",
+				reply: "Visible partial reply",
+			});
+			expect((await restarted.get(item.id)).turn?.status).toBe("stopped");
+		} finally {
+			await app.stop();
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it("supports inbox metadata and branching without losing the original on a failed edit", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "conduit-chat-history-"));
+		const generate = vi.fn(async () => "A distinctive answer.");
+		const chat = new ChatService(directory, generate);
+		try {
+			const parent = await chat.create(false);
+			const temporary = await chat.create(true);
+			await chat.send(parent.id, "Original prompt");
+			const pinned = await chat.editMetadata(parent.id, {
+				title: "Project notes",
+				pinned: true,
+				archived: true,
+			});
+			expect(pinned).toMatchObject({
+				title: "Project notes",
+				pinned: true,
+				archived: true,
+			});
+			expect(await chat.list("distinctive")).toEqual([
+				expect.objectContaining({ id: parent.id, archived: true }),
+			]);
+			expect(await chat.list("missing")).toEqual([]);
+			const branch = await chat.create(false, { id: parent.id, through: 2 });
+			expect(branch.messages).toEqual(pinned.messages);
+			expect(branch.title).toBe("Branch of Project notes");
+			await expect(
+				chat.create(false, { id: temporary.id, through: 1 }),
+			).rejects.toMatchObject({ status: 400 });
+
+			generate.mockRejectedValueOnce(new Error("provider unavailable"));
+			await chat.startTurn(parent.id, {
+				requestId: "aaaabbbb-cccc-4444-eeee-ffffffffffff",
+				text: "Revised prompt",
+				editFrom: 0,
+			});
+			await vi.waitFor(async () => {
+				const result = await chat.get(parent.id);
+				expect(result.messages).toEqual(pinned.messages);
+				expect(result.turn).toMatchObject({ status: "failed" });
+			});
+			await chat.startTurn(parent.id, {
+				requestId: "aaaabbbb-cccc-4444-eeee-eeeeeeeeeeee",
+				retry: true,
+			});
+			await vi.waitFor(async () => {
+				const updated = await chat.get(parent.id);
+				expect(updated.turn).toBeUndefined();
+				expect(updated.messages[0]?.text).toBe("Revised prompt");
+				expect(updated.title).toBe("Project notes");
+			});
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+});

@@ -119,3 +119,100 @@ test("Chat reviews private search and transfers only edited text into a Code dra
 	await page.reload();
 	await expect(code.input).toHaveValue("Only the approved Code draft");
 });
+
+test("an accepted Chat turn recovers after reload and is searchable once complete", async ({
+	page,
+	relayUrl,
+}) => {
+	const chat: ChatConversation = {
+		id: crypto.randomUUID(),
+		title: "Field notes",
+		updatedAt: Date.now(),
+		temporary: false,
+		messages: [],
+	};
+	let calls = 0;
+	let finish = false;
+	let edits: unknown;
+	await page.route(
+		(url) => url.pathname.startsWith("/api/chat"),
+		async (route) => {
+			const request = route.request();
+			const url = new URL(request.url());
+			if (url.pathname === "/api/chat") {
+				const query = url.searchParams.get("q");
+				return route.fulfill({
+					json: {
+						enabled: true,
+						searchEnabled: false,
+						turnsEnabled: true,
+						conversations:
+							!query || chat.messages.some(({ text }) => text.includes(query))
+								? [
+										{
+											id: chat.id,
+											title: chat.title,
+											updatedAt: chat.updatedAt,
+										},
+									]
+								: [],
+					},
+				});
+			}
+			if (url.pathname.endsWith("/turns") && request.method() === "POST") {
+				calls++;
+				const body = request.postDataJSON();
+				chat.receipts = [...(chat.receipts ?? []), body.requestId];
+				if (body.editFrom !== undefined) {
+					edits = body;
+					chat.messages[0] = { role: "user", text: body.text };
+				} else {
+					chat.turn = {
+						id: body.requestId,
+						prompt: { role: "user", text: body.text },
+						status: "running",
+						reply: "A visible fragment",
+					};
+				}
+				return route.fulfill({ status: 202, json: chat });
+			}
+			if (finish && chat.turn) {
+				chat.messages = [
+					chat.turn.prompt,
+					{ role: "assistant", text: "The complete searchable reply." },
+				];
+				delete chat.turn;
+			}
+			return route.fulfill({ json: chat });
+		},
+	);
+	const base = new URL(relayUrl);
+	await page.goto(new URL(`/chat?c=${chat.id}`, base).href);
+	await page
+		.getByRole("textbox", { name: "Message" })
+		.fill("Checkpoint prompt");
+	await page.getByRole("button", { name: "Send", exact: true }).click();
+	await expect(page.getByText("A visible fragment")).toBeVisible();
+	await page.reload();
+	await expect(page.getByText("A visible fragment")).toBeVisible();
+	await expect(page.getByRole("textbox", { name: "Message" })).toHaveValue("");
+	finish = true;
+	await expect(page.getByText("The complete searchable reply.")).toBeVisible();
+	expect(calls).toBe(1);
+
+	await page
+		.getByRole("searchbox", { name: "Search chat history" })
+		.fill("searchable");
+	await page.getByRole("button", { name: "Search", exact: true }).click();
+	await expect(page.getByRole("button", { name: "Field notes" })).toBeVisible();
+	await page.getByRole("button", { name: "Edit prompt" }).click();
+	await page
+		.getByRole("textbox", { name: "Message" })
+		.fill("Revised checkpoint prompt");
+	await page.getByRole("button", { name: "Send edit" }).click();
+	await expect(page.getByText("Revised checkpoint prompt")).toBeVisible();
+	expect(edits).toMatchObject({
+		editFrom: 0,
+		text: "Revised checkpoint prompt",
+	});
+});

@@ -16,6 +16,11 @@ export interface ChatConversation {
 	updatedAt: number;
 	temporary: boolean;
 	messages: ChatMessage[];
+	pinned?: boolean;
+	archived?: boolean;
+	renamed?: boolean;
+	turn?: ChatTurn;
+	receipts?: string[];
 }
 
 export interface ChatSource {
@@ -30,3 +35,27 @@ export interface ChatSearchResult {
 	query: string;
 	sources: ChatSource[];
 }
+
+export interface ChatTurn {
+	id: string;
+	prompt: ChatMessage;
+	status: "running" | "stopped" | "failed";
+	replaceFrom?: number;
+	reply?: string;
+	error?: string;
+}
+
+export interface ChatTurnRequest {
+	requestId: string;
+	text?: string;
+	attachments?: ChatAttachment[];
+	searchId?: string;
+	editFrom?: number;
+	regenerate?: boolean;
+	retry?: boolean;
+}
+
+export type ChatSummary = Pick<
+	ChatConversation,
+	"id" | "title" | "updatedAt" | "archived" | "pinned"
+>;

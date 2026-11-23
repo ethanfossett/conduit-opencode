@@ -1,6 +1,6 @@
 # Chat and Code roadmap
 
-Conduit has a projectless conversation inbox for general Chat and a separate workspace for Code. Code uses OpenCode sessions and streaming. Chat uses a dedicated OpenCode runtime and stateless text generation for tool isolation.
+Conduit has a projectless conversation inbox for general Chat and a separate workspace for Code. Code uses OpenCode sessions and streaming. Chat uses tool-free generation. The dedicated OpenCode runtime provides stateless replies, and an optional NodeCode stream adapter delivers incremental text.
 
 ## NodeCode onboarding
 
@@ -38,7 +38,7 @@ Run `pnpm check`, `pnpm lint`, `pnpm test:unit`, and `pnpm build` from this chec
 
 ## Running the projectless Chat preview
 
-The **Chat** link opens `/chat`. Conversations have their own authenticated HTTP routes and inbox. A dedicated OpenCode 2.x runtime performs a single stateless, tool-free text generation per turn. It uses the NodeCode Cyber v1 model and receives the recent transcript plus any explicitly attached plain text. OpenCode currently returns a complete reply from this tool-free endpoint. Code sessions continue to use their existing streaming path.
+The **Chat** link opens `/chat`. Conversations have their own authenticated HTTP routes and inbox. A dedicated OpenCode 2.x runtime performs a single stateless, tool-free text generation per turn. It uses the NodeCode Cyber v1 model and receives the recent transcript plus any explicitly attached plain text. The isolated OpenCode endpoint returns a complete reply. To enable incremental Chat replies, set `CONDUIT_CHAT_NODECODE_API_KEY` in a protected relay environment file. The relay makes a fixed HTTPS streaming request to NodeCode with the same model and no tool definitions. The dedicated OpenCode endpoint remains the configuration for installations without the stream key. A failed stream is never retried automatically or sent to a different provider. Code sessions continue to use OpenCode streaming.
 
 1. On Linux, install Bubblewrap and socat, then use the OpenCode 2.x binary already available to the relay. Give the Chat runtime its own server password. Store the password and the regular NodeCode key in a protected environment file outside the checkout.
 2. Run `deploy/chat/run-opencode.sh` with `NODECODE_API_KEY` and `CONDUIT_CHAT_OPENCODE_PASSWORD` loaded into its environment. By default, the launcher binds port 4197, starts in an empty workspace, mounts a fresh home in memory, and passes only its dedicated provider and server credentials. Pin the OpenCode binary with `CONDUIT_CHAT_OPENCODE_BINARY` if needed.
@@ -78,3 +78,11 @@ Run `python3 -B -m unittest discover -s deploy/search -v` for worker regressions
 Choose **Continue in Code** on a message, edit the excerpt, and choose a ready project. In Code, choose **Create session with draft**. The browser stages only the selected text in memory for up to ten minutes, then saves it in the new session's regular Code composer after verifying the matching creation acknowledgment. A draft created from temporary Chat can persist in Code after this explicit transfer. The user controls when it is sent.
 
 The handoff store is `src/lib/frontend/stores/chat-handoff.svelte.ts`. The desktop and mobile round-trip lives in `test/e2e/specs/conversation.spec.ts`.
+
+## Chat turns and inbox
+
+The browser starts a turn with `POST /api/chat/:id/turns` and a UUID. The relay saves the accepted prompt and receipt before generation. The browser reads the conversation while the turn is active and reconciles it when returning to the foreground. Retrying the same accepted request ID does not call the provider again. Regular chats recover after browser reconnect or reload. A relay restart marks an unfinished reply as interrupted and offers an explicit retry. Temporary turns remain memory-only.
+
+**Stop** cancels the active request. Regenerate and edit target the latest prompt and preserve the previous completed turn until its replacement succeeds. Editing reuses previous attachments and sources unless the submitted edit supplies replacements. A reply can be branched into a separate saved conversation. Rename, pin, archive, restore, and JSON export are available under **Manage chat**. Inbox search matches saved conversation titles and message text on the relay.
+
+The turn logic is in `src/lib/chat/service.ts`, the fixed provider stream in `src/lib/chat/nodecode-stream.ts`, and the browser recovery test in `test/e2e/specs/conversation.spec.ts`. Temporary Chat and Code continue to use their existing separate state and routes.

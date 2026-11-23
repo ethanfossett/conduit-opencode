@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readRawBody } from "../server/http-utils.js";
 import { ChatError, type ChatService } from "./service.js";
-import type { ChatAttachment } from "./types.js";
+import type { ChatAttachment, ChatTurnRequest } from "./types.js";
 
 function respond(res: ServerResponse, status: number, value: unknown) {
 	res.writeHead(status, {
@@ -19,28 +19,39 @@ export async function handleChatApi(
 ) {
 	try {
 		const root = "/api/chat";
-		const match = /^\/api\/chat\/([0-9a-f-]{36})(\/search(?:\/read)?)?$/.exec(
-			path,
-		);
+		const match =
+			/^\/api\/chat\/([0-9a-f-]{36})(\/search(?:\/read)?|\/turns(?:\/stop)?|\/metadata)?$/.exec(
+				path,
+			);
 		const id = match?.[1];
-		const search = !!match?.[2];
+		const operation = match?.[2];
 		if (path !== root && !id)
 			throw new ChatError(404, "Unknown Chat operation.");
 		if (path === root && req.method === "GET") {
 			respond(res, 200, {
 				enabled: !!service,
 				searchEnabled: service?.searchEnabled ?? false,
-				conversations: (await service?.list()) ?? [],
+				turnsEnabled: !!service,
+				conversations:
+					(await service?.list(
+						new URL(req.url ?? root, "http://localhost").searchParams
+							.get("q")
+							?.slice(0, 240),
+					)) ?? [],
 			});
 			return;
 		}
 		if (!service)
 			throw new ChatError(503, "Chat needs a dedicated OpenCode instance.");
-		if (req.method === "GET" && id && !search) {
+		if (req.method === "GET" && id && operation === "/turns") {
+			respond(res, 200, { running: service.turnProgress(id) ?? null });
+			return;
+		}
+		if (req.method === "GET" && id && !operation) {
 			respond(res, 200, await service.get(id));
 			return;
 		}
-		if (req.method === "DELETE" && id && !search) {
+		if (req.method === "DELETE" && id && !operation) {
 			if (req.headers["x-conduit-chat"] !== "1")
 				throw new ChatError(403, "Chat request header required.");
 			await service.remove(id);
@@ -65,7 +76,7 @@ export async function handleChatApi(
 		} catch {
 			throw new ChatError(400, "Invalid Chat request body.");
 		}
-		if (search && id) {
+		if (operation?.startsWith("/search") && id) {
 			if (match?.[2] === "/search/read") {
 				const searchId = body["searchId"];
 				const index = body["index"];
@@ -90,7 +101,64 @@ export async function handleChatApi(
 			respond(res, 200, await service.lookup(id, body["query"]));
 			return;
 		}
+		if (id && operation === "/turns") {
+			respond(res, 202, await service.startTurn(id, readTurn(body)));
+			return;
+		}
+		if (id && operation === "/turns/stop") {
+			if (Object.keys(body).length !== 1 || !isRequestId(body["requestId"]))
+				throw new ChatError(400, "A valid turn ID is required.");
+			respond(res, 200, await service.stopTurn(id, body["requestId"]));
+			return;
+		}
+		if (id && operation === "/metadata") {
+			const title = body["title"];
+			const pinned = body["pinned"];
+			const archived = body["archived"];
+			if (
+				!Object.keys(body).length ||
+				Object.keys(body).some(
+					(key) => !["title", "pinned", "archived"].includes(key),
+				) ||
+				(title !== undefined && typeof title !== "string") ||
+				(pinned !== undefined && typeof pinned !== "boolean") ||
+				(archived !== undefined && typeof archived !== "boolean")
+			)
+				throw new ChatError(400, "Invalid conversation details.");
+			respond(
+				res,
+				200,
+				await service.editMetadata(id, {
+					...(title !== undefined && { title }),
+					...(pinned !== undefined && { pinned }),
+					...(archived !== undefined && { archived }),
+				}),
+			);
+			return;
+		}
 		if (!id) {
+			if ("branch" in body) {
+				const branch = body["branch"] as {
+					id?: unknown;
+					through?: unknown;
+				} | null;
+				if (
+					Object.keys(body).length !== 1 ||
+					!branch ||
+					!isRequestId(branch.id) ||
+					typeof branch.through !== "number"
+				)
+					throw new ChatError(400, "Choose an earlier reply to branch from.");
+				respond(
+					res,
+					201,
+					await service.create(false, {
+						id: branch.id,
+						through: branch.through,
+					}),
+				);
+				return;
+			}
 			if (
 				Object.keys(body).some((key) => key !== "temporary") ||
 				(body["temporary"] !== undefined &&
@@ -153,4 +221,58 @@ function readAttachments(input: unknown): ChatAttachment[] {
 			throw new ChatError(400, "Invalid text attachment.");
 		return { name, text };
 	});
+}
+
+function isRequestId(value: unknown): value is string {
+	return (
+		typeof value === "string" &&
+		/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value)
+	);
+}
+
+function readTurn(body: Record<string, unknown>): ChatTurnRequest {
+	const requestId = body["requestId"];
+	const text = body["text"];
+	const searchId = body["searchId"];
+	const editFrom = body["editFrom"];
+	const regenerate = body["regenerate"];
+	const retry = body["retry"];
+	if (
+		!isRequestId(requestId) ||
+		Object.keys(body).some(
+			(key) =>
+				![
+					"requestId",
+					"text",
+					"attachments",
+					"searchId",
+					"editFrom",
+					"regenerate",
+					"retry",
+				].includes(key),
+		) ||
+		(regenerate !== undefined && regenerate !== true) ||
+		(retry !== undefined && retry !== true) ||
+		(regenerate || retry
+			? Object.keys(body).length !== 2
+			: typeof text !== "string") ||
+		(searchId !== undefined && typeof searchId !== "string") ||
+		(editFrom !== undefined &&
+			(typeof editFrom !== "number" ||
+				!Number.isInteger(editFrom) ||
+				editFrom < 0))
+	) {
+		throw new ChatError(400, "Invalid chat turn.");
+	}
+	return {
+		requestId,
+		...(typeof text === "string" && { text }),
+		...(body["attachments"] !== undefined && {
+			attachments: readAttachments(body["attachments"]),
+		}),
+		...(typeof searchId === "string" && { searchId }),
+		...(typeof editFrom === "number" && { editFrom }),
+		...(regenerate === true && { regenerate }),
+		...(retry === true && { retry }),
+	};
 }
