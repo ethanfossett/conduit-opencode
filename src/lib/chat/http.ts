@@ -11,6 +11,8 @@ import type {
 	ChatTurnRequest,
 } from "./types.js";
 
+import { offerVoice, voiceWorkerPort } from "./voice-worker.js";
+
 function respond(res: ServerResponse, status: number, value: unknown) {
 	res.writeHead(status, {
 		"Content-Type": "application/json",
@@ -30,7 +32,7 @@ export async function handleChatApi(
 		if (service && (await handleChatFiles(service, path, req, res, respond)))
 			return;
 		const match =
-			/^\/api\/chat\/([0-9a-f-]{36})(\/search(?:\/read)?|\/turns(?:\/stop)?|\/metadata|\/context(?:\/preview)?|\/file-review)?$/.exec(
+			/^\/api\/chat\/([0-9a-f-]{36})(\/search(?:\/read)?|\/turns(?:\/stop)?|\/metadata|\/context(?:\/preview)?|\/file-review|\/voice\/(?:offer|interrupt))?$/.exec(
 				path,
 			);
 		const id = match?.[1];
@@ -44,6 +46,8 @@ export async function handleChatApi(
 				turnsEnabled: !!service,
 				filesEnabled: service?.files.enabled ?? false,
 				contextEnabled: !!service,
+				voiceEnabled: !!service && !!voiceWorkerPort(),
+				models: service?.models ?? [],
 				duplexEnabled: !!service && !!configuredDuplexEndpoint(),
 				reasoningEnabled: service?.reasoningEnabled ?? false,
 				ocrEnabled: service?.files.ocrEnabled ?? false,
@@ -129,6 +133,33 @@ export async function handleChatApi(
 				200,
 				await service.reviewDocuments(id, prompt, readFiles(body["files"])),
 			);
+			return;
+		}
+		if (id && operation === "/voice/offer") {
+			const sdp = body["sdp"];
+			if (
+				Object.keys(body).length !== 1 ||
+				typeof sdp !== "string" ||
+				sdp.length > 24_000 ||
+				!sdp.startsWith("v=0")
+			)
+				throw new ChatError(400, "Invalid voice connection offer.");
+			await service.get(id);
+			respond(res, 200, await offerVoice(sdp));
+			return;
+		}
+		if (id && operation === "/voice/interrupt") {
+			const { requestId, played } = body;
+			if (
+				Object.keys(body).length !== 2 ||
+				!isRequestId(requestId) ||
+				typeof played !== "number" ||
+				!Number.isSafeInteger(played) ||
+				played < 0 ||
+				played > 64_000
+			)
+				throw new ChatError(400, "Invalid voice playback position.");
+			respond(res, 200, await service.interruptVoice(id, requestId, played));
 			return;
 		}
 		if (id && operation === "/turns") {
@@ -307,6 +338,8 @@ function readTurn(body: Record<string, unknown>): ChatTurnRequest {
 	const regenerate = body["regenerate"];
 	const retry = body["retry"];
 	const reasoning = body["reasoning"];
+	const model = body["model"];
+	const voice = body["voice"];
 	if (
 		!isRequestId(requestId) ||
 		Object.keys(body).some(
@@ -322,10 +355,16 @@ function readTurn(body: Record<string, unknown>): ChatTurnRequest {
 					"regenerate",
 					"retry",
 					"reasoning",
+					"model",
+					"voice",
 				].includes(key),
 		) ||
 		(regenerate !== undefined && regenerate !== true) ||
 		(retry !== undefined && retry !== true) ||
+		(voice !== undefined && voice !== true) ||
+		(model !== undefined &&
+			(typeof model !== "string" ||
+				!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,95}$/.test(model))) ||
 		(reasoning !== undefined && reasoning !== "low" && reasoning !== "high") ||
 		(regenerate || retry
 			? Object.keys(body).length !== 2
@@ -340,6 +379,8 @@ function readTurn(body: Record<string, unknown>): ChatTurnRequest {
 	}
 	return {
 		requestId,
+		...(typeof model === "string" && { model }),
+		...(voice === true && { voice }),
 		...((reasoning === "low" || reasoning === "high") && { reasoning }),
 		...(typeof text === "string" && { text }),
 		...(body["attachments"] !== undefined && {

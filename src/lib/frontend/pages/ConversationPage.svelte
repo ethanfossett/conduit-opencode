@@ -2,10 +2,11 @@
 	import { onMount, tick } from "svelte";
 	import ChatFilesPanel from "../components/chat/ChatFilesPanel.svelte";
 	import { type DraftPdf, pdfSelections } from "../utils/chat-file-drafts.js";
+	import ChatLiveVoice from "../components/chat/ChatLiveVoice.svelte";
 	import ChatDuplex from "../components/chat/ChatDuplex.svelte";
 	import ChatDictation from "../components/chat/ChatDictation.svelte";
 	import { createChatSpeech } from "../utils/chat-speech.svelte.js";
-	import type { ChatAttachment, ChatContextChange, ChatContextEntry, ChatReasoning, ChatDocumentCitation, ChatDocumentReview, ChatConversation, ChatSearchResult, ChatSummary, ChatTurnRequest } from "../../chat/types.js";
+	import type { ChatAttachment, ChatContextChange, ChatContextEntry, ChatReasoning, ChatModel, ChatDocumentCitation, ChatDocumentReview, ChatConversation, ChatSearchResult, ChatSummary, ChatTurnRequest } from "../../chat/types.js";
 	import { clearAcceptedDraft, draftKey, loadDraft, saveDraft } from "../utils/drafts.js";
 	import { renderMarkdown } from "../utils/markdown.js";
 	import { stageChatHandoff } from "../stores/chat-handoff.svelte.js";
@@ -24,7 +25,15 @@
 	let contextPreview = $state<{ draft: string; entries: ChatContextEntry[] } | null>(null);
 	let duplexEnabled = $state(false);
 	let voiceActive = $state(false);
+	let liveEnabled = $state(false);
+	let liveActive = $state(false);
+	let liveRequest = $state<string | null>(null);
+	let models = $state<ChatModel[]>([]);
+	let selectedModel = $state("");
+	let liveVoice = $state<{ interrupt: () => Promise<void> }>();
+	const modelChoice = $derived(selectedModel ? models.find(({ id }) => id === selectedModel) : models[0]);
 	let reasoningEnabled = $state(false);
+	const supportsReasoning = $derived(modelChoice?.reasoning ?? reasoningEnabled);
 	let reasoning = $state<ChatReasoning | "">("");
 	let turnsEnabled = $state(false);
 	let inboxQuery = $state("");
@@ -103,11 +112,13 @@
 	}
 
 	async function refresh(query = appliedInboxQuery) {
-		const result = await api<{enabled: boolean; searchEnabled: boolean; turnsEnabled?: boolean; filesEnabled?: boolean; ocrEnabled?: boolean; contextEnabled?: boolean; reasoningEnabled?: boolean; duplexEnabled?: boolean; conversations: ChatSummary[]}>(query ? `?q=${encodeURIComponent(query)}` : "");
+		const result = await api<{enabled: boolean; searchEnabled: boolean; turnsEnabled?: boolean; filesEnabled?: boolean; ocrEnabled?: boolean; contextEnabled?: boolean; reasoningEnabled?: boolean; duplexEnabled?: boolean; voiceEnabled?: boolean; models?: ChatModel[]; conversations: ChatSummary[]}>(query ? `?q=${encodeURIComponent(query)}` : "");
 		enabled = result.enabled;
 		searchEnabled = result.searchEnabled;
 		contextEnabled = result.contextEnabled ?? false;
 		duplexEnabled = result.duplexEnabled ?? false;
+		liveEnabled = result.voiceEnabled ?? false;
+		models = result.models ?? [];
 		reasoningEnabled = result.reasoningEnabled ?? false;
 		turnsEnabled = result.turnsEnabled ?? false;
 		filesEnabled = result.filesEnabled ?? false;
@@ -259,7 +270,7 @@
 		return `${draftKey("conversation", id)}:submitted`;
 	}
 
-	function readPending(conversation: ChatConversation): { requestId: string; text: string; pdfSnapshot?: string; reasoning?: ChatReasoning } | null {
+	function readPending(conversation: ChatConversation): { requestId: string; text: string; pdfSnapshot?: string; reasoning?: ChatReasoning; model?: string; voice?: true } | null {
 		if (conversation.temporary) return null;
 		try {
 			return JSON.parse(loadDraft(pendingKey(conversation.id)) || "null");
@@ -316,13 +327,16 @@
 		if (!id) return;
 		const timer = setInterval(() => {
 			if (!document.hidden) void reconcile(id, true);
-		}, 500);
+		}, liveActive ? 175 : 500);
 		return () => clearInterval(timer);
 	});
 
 	function display(conversation: ChatConversation | null) {
 		speech.stop();
 		chat = conversation;
+		selectedModel = conversation?.turn?.prompt.model ??
+			[...(conversation?.messages ?? [])].reverse().find(({ role, model }) => role === "user" && model)?.model ?? "";
+		liveRequest = null;
 		showManage = false;
 		showContext = false;
 		contextPreview = null;
@@ -503,15 +517,16 @@
 
 	function runTurn(request: Omit<ChatTurnRequest, "requestId">, submitted?: string) {
 		const conversation = chat;
-		if (!conversation || sending || dictationActive || voiceActive) return;
+		if (!conversation || sending || dictationActive || voiceActive || busy) return;
 		speech.stop();
 		const pending = readPending(conversation);
 		const pdfSnapshot = conversation.temporary ? "" : loadDraft(pdfKey(conversation.id));
-		const requestId = submitted !== undefined && pending?.text === submitted && pending.reasoning === request.reasoning && (pending.pdfSnapshot ?? "") === pdfSnapshot
+		const requestId = submitted !== undefined && pending?.text === submitted && pending.reasoning === request.reasoning && pending.model === request.model && pending.voice === request.voice && (pending.pdfSnapshot ?? "") === pdfSnapshot
 			? pending.requestId : crypto.randomUUID();
-		void run(async () => {
+		if (request.voice) liveRequest = requestId;
+		return run(async () => {
 			if (submitted !== undefined && !conversation.temporary) {
-				saveDraft(pendingKey(conversation.id), JSON.stringify({ requestId, text: submitted, pdfSnapshot, reasoning: request.reasoning }));
+				saveDraft(pendingKey(conversation.id), JSON.stringify({ requestId, text: submitted, pdfSnapshot, reasoning: request.reasoning, model: request.model, voice: request.voice }));
 			}
 			try {
 				chat = await api<ChatConversation>(`/${conversation.id}/turns`, "POST", { requestId, ...request });
@@ -538,9 +553,39 @@
 		});
 	}
 
+	function modelOptions() {
+		const model = selectedModel || modelChoice?.id;
+		return {
+			...(model && { model }),
+			...(supportsReasoning && reasoning && { reasoning }),
+		};
+	}
+
+	async function sendSpoken(prompt: string) {
+		const current = chat;
+		if (!current || !liveActive) return;
+		if (busy || sending || editFrom !== null) {
+			appendDictation(current.id, prompt);
+			feedback = "Voice text added to the draft.";
+			return;
+		}
+		await runTurn({ text: prompt, voice: true, ...modelOptions() });
+	}
+
+	async function interruptSpoken(requestId: string, played: number) {
+		const id = chat?.id;
+		if (!id || requestId !== liveRequest) return;
+		const result = await api<ChatConversation>(`/${id}/voice/interrupt`, "POST", { requestId, played });
+		if (chat?.id === id && liveRequest === requestId) chat = result;
+	}
+
 	function stop() {
 		const current = chat;
 		if (!current?.turn || !sending) return;
+		if (liveActive && current.turn.id === liveRequest) {
+			void liveVoice?.interrupt().catch(() => { error = "Could not stop the voice reply."; });
+			return;
+		}
 		void run(async () => {
 			chat = await api<ChatConversation>(`/${current.id}/turns/stop`, "POST", { requestId: current.turn?.id });
 			if (!chat.temporary) await refresh();
@@ -558,11 +603,11 @@
 		return true;
 	}
 
-	function send(event: SubmitEvent) {
+	async function send(event: SubmitEvent) {
 		event.preventDefault();
 		const conversation = chat;
 		const prompt = text.trim();
-		if (!conversation || !prompt || busy || sending || showHandoff || dictationActive || voiceActive || filesBusy) return;
+		if (!conversation || !prompt || busy || (sending && !liveActive) || showHandoff || dictationActive || voiceActive || filesBusy) return;
 		let documentApproval: ChatTurnRequest["documentApproval"];
 		if (pdfDraft.length) {
 			if (!pdfReview) {
@@ -586,9 +631,15 @@
 			...(includeSources && searchResult && { searchId: searchResult.id }),
 		};
 		if (turnsEnabled) {
-			runTurn({
+			if (liveActive) {
+				try { await liveVoice?.interrupt(); }
+				catch { error = "Could not clear the previous voice reply."; return; }
+				if (chat?.id !== conversation.id) return;
+			}
+			void runTurn({
 				...submission,
-				...(reasoningEnabled && reasoning && { reasoning }),
+				...modelOptions(),
+				...(liveActive && { voice: true as const }),
 				...(editFrom !== null && { editFrom }),
 			}, editFrom === null ? text : undefined);
 			return;
@@ -619,7 +670,16 @@
 			{#if filesEnabled && !chat?.temporary}
 				<button type="button" class="rounded border border-border px-3 py-1 text-sm" disabled={busy || sending} onclick={() => openFiles()}>Files</button>
 			{/if}
-			{#if enabled}<span class="text-xs text-text-muted">NodeCode · Cyber v1</span>{/if}
+			{#if models.length > 1 || (selectedModel && !modelChoice)}
+				<label class="sr-only" for="chat-model">Chat model</label>
+				<select id="chat-model" value={selectedModel || modelChoice?.id} onchange={(event) => {
+					selectedModel = event.currentTarget.value;
+					reasoning = "";
+				}} class="max-w-44 rounded border border-border bg-bg-surface px-2 py-1 text-sm">
+					{#if selectedModel && !modelChoice}<option value={selectedModel} disabled>Model unavailable</option>{/if}
+					{#each models as model (model.id)}<option value={model.id}>{model.label}</option>{/each}
+				</select>
+			{:else if enabled}<span class="text-xs text-text-muted">{modelChoice?.label ?? "NodeCode · Cyber v1"}</span>{/if}
 		</div>
 	</header>
 	{#if loading}
@@ -746,12 +806,13 @@
 						<div class="mx-auto max-w-2xl space-y-5">
 							{#each visibleMessages as message, index}
 								<div id={`chat-source-${index}`} tabindex="-1" class="break-words rounded-xl px-4 py-3 text-sm" class:bg-bg-alt={message.role === "user"}>
-									<span class="mb-1 block text-xs font-medium text-text-muted">{message.role === "user" ? "You" : "Cyber v1"}</span>
+									<span class="mb-1 block text-xs font-medium text-text-muted">{message.role === "user" ? "You" : models.find(({ id }) => id === message.model)?.label ?? message.model ?? "Cyber v1"}</span>
 									{#if message.role === "assistant"}
 										<div class="md-content overflow-x-auto text-sm leading-relaxed">{@html renderMarkdown(message.text, chatMarkdown)}</div>
 									{:else}
 										<p class="whitespace-pre-wrap">{message.text}</p>
 									{/if}
+									{#if message.interrupted}<span class="mt-1 block text-xs text-text-muted">Interrupted during playback</span>{/if}
 									{#each message.attachments ?? [] as file}
 										<span class="mt-1 block text-xs text-text-muted">Attachment · {file.name}</span>
 									{/each}
@@ -791,7 +852,7 @@
 												<button type="button" class="underline" onclick={speech.togglePause}>{speech.state.paused ? "Resume playback" : "Pause playback"}</button>
 												<button type="button" class="underline" onclick={speech.stop}>Stop playback</button>
 											{:else}
-												<button type="button" class="underline" disabled={dictationActive || voiceActive} onclick={() =>
+												<button type="button" class="underline" disabled={dictationActive || voiceActive || liveActive} onclick={() =>
 													speech.play(index, renderMarkdown(message.text, chatMarkdown))}>Read aloud</button>
 											{/if}
 										{/if}
@@ -886,7 +947,7 @@
 							<p class="flex justify-between text-xs text-text-muted">Editing the latest prompt{#if chat.messages[editFrom]?.documents?.length} · Add and review a PDF to include it again{/if} <button type="button" class="underline" disabled={dictationActive} onclick={endEdit}>Cancel edit</button></p>
 						{/if}
 						<label class="sr-only" for="chat-message">Message</label>
-						<textarea id="chat-message" placeholder="Message Cyber v1" maxlength="24000" rows="3" disabled={busy || sending} bind:value={text} oninput={(event) => {
+						<textarea id="chat-message" placeholder={`Message ${modelChoice?.label ?? "Cyber v1"}`} maxlength="24000" rows="3" disabled={busy || (sending && !liveActive)} bind:value={text} oninput={(event) => {
 							pdfReview = null;
 							if (storageKey && editFrom === null) saveDraft(storageKey, event.currentTarget.value);
 						}} class="w-full resize-y rounded-xl border border-border bg-bg-surface p-3 text-base"></textarea>
@@ -944,7 +1005,7 @@
 							{/if}
 							<label class="cursor-pointer text-text-muted underline">Attach text files<input type="file" accept="text/*,.md,.json,.csv,.log" multiple disabled={busy} onchange={attach} class="sr-only" /></label>
 							{#each [chat.id] as dictationChatId (dictationChatId)}
-								<ChatDictation disabled={busy || sending || showHandoff || voiceActive}
+								<ChatDictation disabled={busy || sending || showHandoff || voiceActive || liveActive}
 									onCapture={speech.stop}
 									onActivity={(active) => (dictationActive = active)}
 									onTranscript={(transcript) => appendDictation(dictationChatId, transcript)} />
@@ -955,13 +1016,20 @@
 									else showSearch = true;
 								}}>Web search</button>
 							{/if}
-							{#if duplexEnabled}
+							{#if liveEnabled}
+								{#key chat.id}
+									<ChatLiveVoice bind:this={liveVoice} {chat} requestId={liveRequest} disabled={busy || sending || dictationActive || voiceActive}
+										onActivity={(active) => { liveActive = active; if (active) speech.stop(); }}
+										onTranscript={sendSpoken} onInterrupt={interruptSpoken} />
+								{/key}
+							{/if}
+							{#if duplexEnabled && !liveActive}
 								{#key chat.id}
 									<ChatDuplex chatId={chat.id} disabled={busy || sending || dictationActive}
 										onActivity={(active) => { voiceActive = active; if (active) speech.stop(); }} />
 								{/key}
 							{/if}
-							{#if reasoningEnabled}
+							{#if supportsReasoning}
 								<label class="sr-only" for="chat-reasoning">Reasoning effort</label>
 								<select id="chat-reasoning" bind:value={reasoning} disabled={busy || sending} class="rounded border border-border bg-bg-surface px-2 py-1 text-sm">
 									<option value="">Default</option>
@@ -969,9 +1037,10 @@
 									<option value="high">Think deeper</option>
 								</select>
 							{/if}
-							<button type="submit" disabled={busy || sending || showHandoff || dictationActive || voiceActive || filesBusy || !text.trim()} class="rounded-lg bg-accent px-4 py-2 text-bg disabled:opacity-50">{pdfDraft.length ? "Send with excerpts" : editFrom === null ? "Send" : "Send edit"}</button>
+							<button type="submit" disabled={busy || (sending && !liveActive) || showHandoff || dictationActive || voiceActive || filesBusy || !text.trim()} class="rounded-lg bg-accent px-4 py-2 text-bg disabled:opacity-50">{pdfDraft.length ? "Send with excerpts" : editFrom === null ? "Send" : "Send edit"}</button>
 						</div>
-						<p class="text-xs text-text-muted">{pdfDraft.length ? "PDFs are stored on Conduit. Sending includes text excerpts from the selected pages." : "NodeCode receives the message, selected conversation context, and any text you attach."}</p>
+						{#if liveEnabled && !modelChoice?.local}<p class="text-xs text-text-muted">Talk to Chat sends finalized speech text to {modelChoice?.label ?? "NodeCode"}. Audio stays on your devices.</p>{/if}
+						<p class="text-xs text-text-muted">{pdfDraft.length ? "PDFs are stored on Conduit. Sending includes text excerpts from the selected pages." : modelChoice?.local ? "This model runs on your desktop." : "The selected provider receives the message, selected context, and any text you attach."}</p>
 					</form>
 				{:else}
 					<div class="grid flex-1 place-content-center p-6 text-center">

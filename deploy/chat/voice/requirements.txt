@@ -1,0 +1,5 @@
+pipecat-ai[webrtc,silero]==1.17.0
+pocket-tts==4.0.1
+fastapi==0.165.0
+uvicorn==0.54.0
+httpx==0.28.1

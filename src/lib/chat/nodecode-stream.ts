@@ -10,17 +10,21 @@ export async function streamNodeCode(
 	signal: AbortSignal,
 	onText: (text: string) => void,
 	reasoning?: ChatReasoning,
+	model = NODECODE_MODEL_ID,
+	endpoint = "https://api.nodecode.ai/v1/chat/completions",
+	outputLimit?: number,
 ): Promise<string> {
-	const response = await fetch("https://api.nodecode.ai/v1/chat/completions", {
+	const response = await fetch(endpoint, {
 		method: "POST",
 		headers: {
-			Authorization: `Bearer ${key}`,
+			...(key && { Authorization: `Bearer ${key}` }),
 			"Content-Type": "application/json",
 			Accept: "text/event-stream",
 		},
 		body: JSON.stringify({
-			model: NODECODE_MODEL_ID,
+			model,
 			stream: true,
+			...(outputLimit && { max_tokens: outputLimit }),
 			...(reasoning && { reasoning_effort: reasoning }),
 			messages: [{ role: "user", content: prompt }],
 		}),
@@ -33,7 +37,7 @@ export async function streamNodeCode(
 		!response.headers.get("content-type")?.includes("text/event-stream")
 	) {
 		await response.body?.cancel().catch(() => undefined);
-		throw new Error("NodeCode stream unavailable.");
+		throw new Error("Chat model stream unavailable.");
 	}
 	const reader = response.body.getReader();
 	const decoder = new TextDecoder();
@@ -42,7 +46,7 @@ export async function streamNodeCode(
 	try {
 		for (;;) {
 			const chunk = await reader.read();
-			if (chunk.done) throw new Error("NodeCode stream ended early.");
+			if (chunk.done) throw new Error("Chat model stream ended early.");
 			buffer += decoder.decode(chunk.value, { stream: true });
 			let end = buffer.indexOf("\n");
 			while (end >= 0) {
@@ -56,7 +60,7 @@ export async function streamNodeCode(
 					error?: unknown;
 					choices?: { delta?: { content?: unknown } }[];
 				};
-				if (frame.error) throw new Error("NodeCode stream failed.");
+				if (frame.error) throw new Error("Chat model stream failed.");
 				const text = frame.choices?.[0]?.delta?.content;
 				if (typeof text !== "string" || !text) continue;
 				reply = (reply + text).slice(0, MAX_REPLY);
@@ -64,7 +68,7 @@ export async function streamNodeCode(
 				if (reply.length === MAX_REPLY) return reply;
 			}
 			if (buffer.length > 256_000)
-				throw new Error("NodeCode stream frame too large.");
+				throw new Error("Chat model stream frame too large.");
 		}
 	} finally {
 		await reader.cancel().catch(() => undefined);

@@ -108,6 +108,7 @@ it("persists context choices and remembers reasoning on regeneration without sen
 			expect.any(AbortSignal),
 			expect.any(Function),
 			"high",
+			undefined,
 		]);
 		expect(generate.mock.lastCall?.[0]).not.toMatch(
 			/Private example|Sensitive attachment|Use attached source/,

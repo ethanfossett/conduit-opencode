@@ -5,10 +5,21 @@ export interface ChatAttachment {
 
 export type ChatReasoning = "low" | "high";
 
+export interface ChatModel {
+	id: string;
+	label: string;
+	reasoning: boolean;
+	local?: true;
+}
+
 export interface ChatMessage {
 	role: "user" | "assistant";
 	text: string;
 	reasoning?: ChatReasoning;
+	model?: string;
+	voice?: true;
+	voiceTurnId?: string;
+	interrupted?: true;
 	attachments?: ChatAttachment[];
 	documents?: ChatDocumentContext[];
 	documentsReviewed?: boolean;
@@ -71,11 +82,14 @@ export interface ChatTurn {
 	status: "running" | "stopped" | "failed";
 	replaceFrom?: number;
 	reply?: string;
+	played?: number;
 	error?: string;
 }
 
 export interface ChatTurnRequest {
 	requestId: string;
+	model?: string;
+	voice?: true;
 	reasoning?: ChatReasoning;
 	text?: string;
 	attachments?: ChatAttachment[];
