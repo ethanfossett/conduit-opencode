@@ -1,8 +1,10 @@
 <script lang="ts">
 	import { onMount, tick } from "svelte";
+	import ChatFilesPanel from "../components/chat/ChatFilesPanel.svelte";
+	import { type DraftPdf, pdfSelections } from "../utils/chat-file-drafts.js";
 	import ChatDictation from "../components/chat/ChatDictation.svelte";
 	import { createChatSpeech } from "../utils/chat-speech.svelte.js";
-	import type { ChatAttachment, ChatConversation, ChatSearchResult, ChatSummary, ChatTurnRequest } from "../../chat/types.js";
+	import type { ChatAttachment, ChatDocumentCitation, ChatConversation, ChatSearchResult, ChatSummary, ChatTurnRequest } from "../../chat/types.js";
 	import { clearAcceptedDraft, draftKey, loadDraft, saveDraft } from "../utils/drafts.js";
 	import { renderMarkdown } from "../utils/markdown.js";
 	import { stageChatHandoff } from "../stores/chat-handoff.svelte.js";
@@ -26,6 +28,7 @@
 	let previousDraft: {
 		text: string;
 		attachments: ChatAttachment[];
+		pdfs: DraftPdf[];
 		showSearch: boolean;
 		searchQuery: string;
 		searchResult: ChatSearchResult | null;
@@ -40,6 +43,12 @@
 	let chat = $state<ChatConversation | null>(null);
 	let text = $state("");
 	let attachments = $state<ChatAttachment[]>([]);
+	let filesEnabled = $state(false);
+	let pdfDraft = $state<DraftPdf[]>([]);
+	let filesOpen = $state(false);
+	let filesBusy = $state(false);
+	let pdfPreview = $state<ChatDocumentCitation>();
+	let reviewedPages = $state<{ id: string; name: string; pages: number[] }[]>([]);
 	let enabled = $state(false);
 	let handoffText = $state("");
 	let handoffProject = $state("");
@@ -85,10 +94,11 @@
 	}
 
 	async function refresh(query = appliedInboxQuery) {
-		const result = await api<{enabled: boolean; searchEnabled: boolean; turnsEnabled?: boolean; conversations: ChatSummary[]}>(query ? `?q=${encodeURIComponent(query)}` : "");
+		const result = await api<{enabled: boolean; searchEnabled: boolean; turnsEnabled?: boolean; filesEnabled?: boolean; conversations: ChatSummary[]}>(query ? `?q=${encodeURIComponent(query)}` : "");
 		enabled = result.enabled;
 		searchEnabled = result.searchEnabled;
 		turnsEnabled = result.turnsEnabled ?? false;
+		filesEnabled = result.filesEnabled ?? false;
 		conversations = result.conversations;
 		appliedInboxQuery = query;
 	}
@@ -147,11 +157,46 @@
 		}
 	}
 
+	function pdfKey(id: string) {
+		return `${draftKey("conversation", id)}:pdfs`;
+	}
+
+	function readPdfDraft(conversation: ChatConversation | null): DraftPdf[] {
+		if (!conversation || conversation.temporary) return [];
+		try {
+			const value = JSON.parse(loadDraft(pdfKey(conversation.id)) || "[]");
+			return Array.isArray(value) ? value : [];
+		} catch { return []; }
+	}
+
+	function setPdfDraft(value: DraftPdf[]) {
+		pdfDraft = value;
+		reviewedPages = [];
+		if (chat && !chat.temporary && editFrom === null) {
+			saveDraft(pdfKey(chat.id), value.length ? JSON.stringify(value) : "");
+		}
+	}
+
+	function openFiles(page?: ChatDocumentCitation) {
+		pdfPreview = page;
+		filesOpen = true;
+	}
+
+	function reviewPdfs() {
+		const id = chat?.id;
+		if (!id) return;
+		void run(async () => {
+			reviewedPages = (await api<{documents: typeof reviewedPages}>(
+				`/${id}/file-review`, "POST", { prompt: text, files: pdfSelections(pdfDraft) },
+			)).documents;
+		});
+	}
+
 	function pendingKey(id: string) {
 		return `${draftKey("conversation", id)}:submitted`;
 	}
 
-	function readPending(conversation: ChatConversation): { requestId: string; text: string } | null {
+	function readPending(conversation: ChatConversation): { requestId: string; text: string; pdfSnapshot?: string } | null {
 		if (conversation.temporary) return null;
 		try {
 			return JSON.parse(loadDraft(pendingKey(conversation.id)) || "null");
@@ -165,6 +210,7 @@
 		if (!pending || !conversation.receipts?.includes(pending.requestId)) return;
 		const key = draftKey("conversation", conversation.id);
 		clearAcceptedDraft(key, pending.text);
+		if (pending.pdfSnapshot !== undefined && loadDraft(pdfKey(conversation.id)) === pending.pdfSnapshot) setPdfDraft([]);
 		saveDraft(pendingKey(conversation.id), "");
 		if (editFrom === null && text === pending.text) text = "";
 	}
@@ -218,6 +264,10 @@
 		titleDraft = conversation?.title ?? "";
 		editFrom = null;
 		previousDraft = null;
+		pdfDraft = readPdfDraft(conversation);
+		reviewedPages = [];
+		filesOpen = false;
+		pdfPreview = undefined;
 		offline = false;
 		feedback = "";
 		text = conversation && !conversation.temporary ? loadDraft(draftKey("conversation", conversation.id)) : "";
@@ -367,9 +417,11 @@
 	function beginEdit(index: number) {
 		const message = chat?.messages[index];
 		if (!message || index !== lastPrompt || sending) return;
-		previousDraft = { text, attachments, showSearch, searchQuery, searchResult, includeSources };
+		previousDraft = { text, attachments, pdfs: pdfDraft, showSearch, searchQuery, searchResult, includeSources };
 		editFrom = index;
 		text = message.text;
+		pdfDraft = [];
+		reviewedPages = [];
 		resetSearch();
 		attachments = [];
 		document.getElementById("chat-message")?.focus();
@@ -378,7 +430,8 @@
 	function endEdit() {
 		if (editFrom === null || !previousDraft) return;
 		editFrom = null;
-		({ text, attachments, showSearch, searchQuery, searchResult, includeSources } = previousDraft);
+		({ text, attachments, pdfs: pdfDraft, showSearch, searchQuery, searchResult, includeSources } = previousDraft);
+		reviewedPages = [];
 		previousDraft = null;
 	}
 
@@ -387,11 +440,12 @@
 		if (!conversation || sending || dictationActive) return;
 		speech.stop();
 		const pending = readPending(conversation);
-		const requestId = submitted !== undefined && pending?.text === submitted
+		const pdfSnapshot = conversation.temporary ? "" : loadDraft(pdfKey(conversation.id));
+		const requestId = submitted !== undefined && pending?.text === submitted && (pending.pdfSnapshot ?? "") === pdfSnapshot
 			? pending.requestId : crypto.randomUUID();
 		void run(async () => {
 			if (submitted !== undefined && !conversation.temporary) {
-				saveDraft(pendingKey(conversation.id), JSON.stringify({ requestId, text: submitted }));
+				saveDraft(pendingKey(conversation.id), JSON.stringify({ requestId, text: submitted, pdfSnapshot }));
 			}
 			try {
 				chat = await api<ChatConversation>(`/${conversation.id}/turns`, "POST", { requestId, ...request });
@@ -407,6 +461,7 @@
 			} else if (submitted !== undefined) {
 				text = "";
 				attachments = [];
+				setPdfDraft([]);
 				resetSearch();
 			}
 			await scrollToLatest();
@@ -431,6 +486,7 @@
 		const updated = `${text}${separator}${transcript}`;
 		if (updated.length > 24_000) return false;
 		text = updated;
+		reviewedPages = [];
 		if (storageKey && editFrom === null) saveDraft(storageKey, text);
 		return true;
 	}
@@ -439,8 +495,16 @@
 		event.preventDefault();
 		const conversation = chat;
 		const prompt = text.trim();
-		if (!conversation || !prompt || busy || sending || showHandoff || dictationActive) return;
+		if (!conversation || !prompt || busy || sending || showHandoff || dictationActive || filesBusy) return;
+		let pdfs: ReturnType<typeof pdfSelections>;
+		try {
+			pdfs = reviewedPages.length ? reviewedPages.map(({ id, pages }) => ({ id, pages })) : pdfSelections(pdfDraft);
+		} catch (err) {
+			error = err instanceof Error ? err.message : "Check the selected PDF pages.";
+			return;
+		}
 		const submission = {
+			...(pdfs.length && { files: pdfs }),
 			text: prompt,
 			...(attachments.length ? { attachments } : {}),
 			...(includeSources && searchResult && { searchId: searchResult.id }),
@@ -474,7 +538,12 @@
 			<span aria-current="page" class="font-semibold">Chat</span>
 			<a href="/" class="text-text-muted hover:text-text">Code</a>
 		</nav>
-		{#if enabled}<span class="text-xs text-text-muted">NodeCode · Cyber v1</span>{/if}
+		<div class="flex items-center gap-3">
+			{#if filesEnabled && !chat?.temporary}
+				<button type="button" class="rounded border border-border px-3 py-1 text-sm" disabled={busy || sending} onclick={() => openFiles()}>Files</button>
+			{/if}
+			{#if enabled}<span class="text-xs text-text-muted">NodeCode · Cyber v1</span>{/if}
+		</div>
 	</header>
 	{#if loading}
 		<p class="m-6 text-text-muted">Opening Chat…</p>
@@ -523,6 +592,7 @@
 								if (!chat) return;
 								await api(`/${chat.id}`, "DELETE");
 								if (storageKey) saveDraft(storageKey, "");
+								if (!chat.temporary) saveDraft(pdfKey(chat.id), "");
 								display(null);
 								await refresh();
 							})}>Confirm delete</button>
@@ -558,6 +628,16 @@
 									{#each message.attachments ?? [] as file}
 										<span class="mt-1 block text-xs text-text-muted">Attachment · {file.name}</span>
 									{/each}
+									{#if filesEnabled}
+										{#each message.documents ?? [] as file}
+											<button type="button" class="mt-2 me-2 rounded border border-border px-2 py-1 text-xs underline" onclick={() =>
+												openFiles({ id: file.id, name: file.name, page: file.pages[0]?.page ?? 1, excerpt: "" })}>{file.name}</button>
+										{/each}
+										{#each message.fileCitations ?? [] as citation}
+											<button type="button" class="mt-2 me-2 rounded border border-border px-2 py-1 text-xs underline" onclick={() =>
+												openFiles(citation)}>{citation.name} · p. {citation.page}</button>
+										{/each}
+									{/if}
 									{#if message.sourceContext}
 										<ol class="mt-2 space-y-1 text-xs text-text-muted" aria-label="Web sources">
 											{#each message.sourceContext.sources as source, index}
@@ -672,6 +752,7 @@
 						{/if}
 						<label class="sr-only" for="chat-message">Message</label>
 						<textarea id="chat-message" placeholder="Message Cyber v1" maxlength="24000" rows="3" disabled={busy || sending} bind:value={text} oninput={(event) => {
+							reviewedPages = [];
 							if (storageKey && editFrom === null) saveDraft(storageKey, event.currentTarget.value);
 						}} class="w-full resize-y rounded-xl border border-border bg-bg-surface p-3 text-base"></textarea>
 						{#if attachments.length}
@@ -681,7 +762,28 @@
 								{/each}
 							</ul>
 						{/if}
+						{#if pdfDraft.length}
+							<div class="max-h-36 space-y-2 overflow-auto text-xs" aria-label="PDF attachments">
+								{#each pdfDraft as item (item.file.id)}
+									<div class="flex flex-wrap items-center gap-2 rounded bg-bg-alt p-2">
+										<button type="button" class="min-w-0 flex-1 break-words text-left underline" onclick={() =>
+											openFiles({ id: item.file.id, name: item.file.name, page: 1, excerpt: "" })}>{item.file.name}</button>
+										<input aria-label={`Pages for ${item.file.name}`} placeholder="Auto pages" maxlength="64" disabled={busy || sending}
+											class="w-28 rounded border border-border bg-bg p-1 text-sm" value={item.pageInput} oninput={(event) => {
+												setPdfDraft(pdfDraft.map((entry) => entry.file.id === item.file.id ? { ...entry, pageInput: event.currentTarget.value } : entry));
+											}} />
+										<button type="button" class="underline" disabled={busy || sending} onclick={() =>
+											setPdfDraft(pdfDraft.filter((entry) => entry.file.id !== item.file.id))}>Detach</button>
+									</div>
+								{/each}
+								<button type="button" class="underline" disabled={busy || sending} onclick={reviewPdfs}>Review pages sent to NodeCode</button>
+								{#each reviewedPages as doc}<p>{doc.name} · pages {doc.pages.join(", ")}</p>{/each}
+							</div>
+						{/if}
 						<div class="flex flex-wrap items-center justify-between gap-2 text-sm">
+							{#if filesEnabled}
+								<button type="button" class="rounded border border-border px-2 py-1" disabled={busy || sending} onclick={() => openFiles()}>+ PDF</button>
+							{/if}
 							<label class="cursor-pointer text-text-muted underline">Attach text files<input type="file" accept="text/*,.md,.json,.csv,.log" multiple disabled={busy} onchange={attach} class="sr-only" /></label>
 							{#each [chat.id] as dictationChatId (dictationChatId)}
 								<ChatDictation disabled={busy || sending || showHandoff}
@@ -695,9 +797,9 @@
 									else showSearch = true;
 								}}>Web search</button>
 							{/if}
-							<button type="submit" disabled={busy || sending || showHandoff || dictationActive || !text.trim()} class="rounded-lg bg-accent px-4 py-2 text-bg disabled:opacity-50">{editFrom === null ? "Send" : "Send edit"}</button>
+							<button type="submit" disabled={busy || sending || showHandoff || dictationActive || filesBusy || !text.trim()} class="rounded-lg bg-accent px-4 py-2 text-bg disabled:opacity-50">{editFrom === null ? "Send" : "Send edit"}</button>
 						</div>
-						<p class="text-xs text-text-muted">NodeCode receives the message, recent context, and any files you attach.</p>
+						<p class="text-xs text-text-muted">{pdfDraft.length ? "PDFs are stored on Conduit. Sending includes text excerpts from the selected pages." : "NodeCode receives the message, recent context, and any text you attach."}</p>
 					</form>
 				{:else}
 					<div class="grid flex-1 place-content-center p-6 text-center">
@@ -712,3 +814,8 @@
 		</div>
 	{/if}
 </div>
+
+{#if filesOpen}
+	<ChatFilesPanel chatId={chat?.id} temporary={chat?.temporary ?? false} selected={pdfDraft} initialPage={pdfPreview}
+		onChange={setPdfDraft} onClose={() => (filesOpen = false)} onBusy={(active) => (filesBusy = active)} />
+{/if}

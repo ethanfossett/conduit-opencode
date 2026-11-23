@@ -1,7 +1,12 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readRawBody } from "../server/http-utils.js";
+import { handleChatFiles } from "./file-http.js";
 import { ChatError, type ChatService } from "./service.js";
-import type { ChatAttachment, ChatTurnRequest } from "./types.js";
+import type {
+	ChatAttachment,
+	ChatFileSelection,
+	ChatTurnRequest,
+} from "./types.js";
 
 function respond(res: ServerResponse, status: number, value: unknown) {
 	res.writeHead(status, {
@@ -19,8 +24,10 @@ export async function handleChatApi(
 ) {
 	try {
 		const root = "/api/chat";
+		if (service && (await handleChatFiles(service, path, req, res, respond)))
+			return;
 		const match =
-			/^\/api\/chat\/([0-9a-f-]{36})(\/search(?:\/read)?|\/turns(?:\/stop)?|\/metadata)?$/.exec(
+			/^\/api\/chat\/([0-9a-f-]{36})(\/search(?:\/read)?|\/turns(?:\/stop)?|\/metadata|\/file-review)?$/.exec(
 				path,
 			);
 		const id = match?.[1];
@@ -32,6 +39,7 @@ export async function handleChatApi(
 				enabled: !!service,
 				searchEnabled: service?.searchEnabled ?? false,
 				turnsEnabled: !!service,
+				filesEnabled: service?.files.enabled ?? false,
 				conversations:
 					(await service?.list(
 						new URL(req.url ?? root, "http://localhost").searchParams
@@ -99,6 +107,30 @@ export async function handleChatApi(
 			)
 				throw new ChatError(400, "Chat search accepts one reviewed query.");
 			respond(res, 200, await service.lookup(id, body["query"]));
+			return;
+		}
+		if (id && operation === "/file-review") {
+			const prompt = body["prompt"];
+			if (
+				Object.keys(body).length !== 2 ||
+				typeof prompt !== "string" ||
+				prompt.length > 24_000
+			)
+				throw new ChatError(400, "Enter a message and choose PDF pages.");
+			const chat = await service.get(id);
+			const documents = await service.files.context(
+				id,
+				chat.temporary,
+				readFiles(body["files"]),
+				prompt,
+			);
+			respond(res, 200, {
+				documents: documents.map(({ id, name, pages }) => ({
+					id,
+					name,
+					pages: pages.map(({ page }) => page),
+				})),
+			});
 			return;
 		}
 		if (id && operation === "/turns") {
@@ -245,6 +277,7 @@ function readTurn(body: Record<string, unknown>): ChatTurnRequest {
 					"requestId",
 					"text",
 					"attachments",
+					"files",
 					"searchId",
 					"editFrom",
 					"regenerate",
@@ -270,9 +303,39 @@ function readTurn(body: Record<string, unknown>): ChatTurnRequest {
 		...(body["attachments"] !== undefined && {
 			attachments: readAttachments(body["attachments"]),
 		}),
+		...(body["files"] !== undefined && { files: readFiles(body["files"]) }),
 		...(typeof searchId === "string" && { searchId }),
 		...(typeof editFrom === "number" && { editFrom }),
 		...(regenerate === true && { regenerate }),
 		...(retry === true && { retry }),
 	};
+}
+
+function readFiles(input: unknown): ChatFileSelection[] {
+	if (!Array.isArray(input) || input.length > 4)
+		throw new ChatError(400, "Include up to four PDFs per message.");
+	const seen = new Set<string>();
+	return input.map((item: unknown) => {
+		if (!item || typeof item !== "object" || Array.isArray(item))
+			throw new ChatError(400, "Invalid PDF selection.");
+		const { id, pages } = item as { id?: unknown; pages?: unknown };
+		if (
+			!isRequestId(id) ||
+			seen.has(id) ||
+			(pages !== undefined &&
+				(!Array.isArray(pages) ||
+					!pages.length ||
+					pages.length > 8 ||
+					pages.some(
+						(page) => !Number.isInteger(page) || page < 1 || page > 200,
+					)))
+		) {
+			throw new ChatError(
+				400,
+				"Choose unique PDFs and up to eight valid page numbers per PDF.",
+			);
+		}
+		seen.add(id);
+		return { id, ...(Array.isArray(pages) && { pages: [...new Set(pages)] }) };
+	});
 }

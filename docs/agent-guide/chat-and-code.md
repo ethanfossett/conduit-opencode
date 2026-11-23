@@ -96,3 +96,13 @@ The default server endpoint is `http://127.0.0.1:8178/inference`. Run an existin
 **Read aloud** uses a voice reported as local by the browser. It has pause, resume, and stop controls and releases playback when leaving the chat. Devices without an available on-device voice show a message when the user tries to play a reply.
 
 The browser controls live in `ChatDictation.svelte` and `chat-speech.svelte.ts`. The replay tests cover microphone release on visibility change, retry without sending, draft reload, and speech controls. To test on an actual iPhone, accept microphone permission, record a phrase, switch apps while recording, then reopen Chat and check the editable transcript and the iOS microphone indicator.
+
+## PDF files in Chat
+
+**+ PDF** opens the file picker and current chat's files. Uploading stores the original on the relay. Attachments recover in the same browser after reload. **Review pages sent to NodeCode** previews the selected page numbers before sending. Leave the page field blank to choose up to four relevant pages, or select up to eight pages per PDF using numbers or ranges. The model receives bounded extracted excerpts. **Files** searches PDFs by name and extracted text, opens page previews, and provides rename, download, library removal and original deletion. **Show all uploads** exposes regular chat uploads for file management. **Save to library** lets another saved chat reuse the same original.
+
+The Linux relay uses Bubblewrap, prlimit and system Poppler tools (`pdfinfo`, `pdftotext`, `pdftoppm`). PDF parsing and page rendering run with no network, bounded memory, time and output, and a limited read-only filesystem. The initial limits are 10 MiB and 200 pages per file, four PDFs per turn, and 256 MiB of saved originals. A scanned PDF can be viewed, downloaded and managed. Asking questions requires selectable text on the chosen pages. The preview renders the cited page as a PNG inside the app.
+
+Regular PDF files live in the relay's `chat/files/` state directory. Temporary PDF bytes and text stay in relay memory. A temporary file cannot enter the library or be attached to a different chat. Deleting a file removes the original and searchable library text. Saved turns retain the excerpts they used, and a citation to a deleted original reports that the PDF is unavailable. New prompts only include document excerpts from their explicit selections.
+
+Before release, verify on a real iPhone that a PDF can be picked from Files, recovered after reopening the PWA, reviewed and sent, opened at a cited page, and selected from the library in a second chat. The parser, store, HTTP endpoints and UI live in `src/lib/chat/{pdf,files,file-http}.ts` and `ChatFilesPanel.svelte`.

@@ -7,6 +7,8 @@ export interface ChatMessage {
 	role: "user" | "assistant";
 	text: string;
 	attachments?: ChatAttachment[];
+	documents?: ChatDocumentContext[];
+	fileCitations?: ChatDocumentCitation[];
 	sourceContext?: Pick<ChatSearchResult, "query" | "sources">;
 }
 
@@ -49,6 +51,7 @@ export interface ChatTurnRequest {
 	requestId: string;
 	text?: string;
 	attachments?: ChatAttachment[];
+	files?: ChatFileSelection[];
 	searchId?: string;
 	editFrom?: number;
 	regenerate?: boolean;
@@ -59,3 +62,32 @@ export type ChatSummary = Pick<
 	ChatConversation,
 	"id" | "title" | "updatedAt" | "archived" | "pinned"
 >;
+
+export interface ChatFile {
+	id: string;
+	name: string;
+	size: number;
+	createdAt?: number;
+	pages: number;
+	textPages: number;
+	saved: boolean;
+	temporary: boolean;
+}
+
+export interface ChatFileSelection {
+	id: string;
+	pages?: number[];
+}
+
+export interface ChatDocumentContext {
+	id: string;
+	name: string;
+	pages: { page: number; excerpt: string }[];
+}
+
+export interface ChatDocumentCitation {
+	id: string;
+	name: string;
+	page: number;
+	excerpt: string;
+}
