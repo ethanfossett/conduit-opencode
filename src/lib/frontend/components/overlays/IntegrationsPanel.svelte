@@ -3,6 +3,8 @@
 <!-- key, OAuth (with polling + code completion) and command auth.           -->
 
 <script lang="ts">
+	import NodecodeCard from "./NodecodeCard.svelte";
+	import { NODECODE_PROVIDER_ID } from "../../../nodecode.js";
 	import Icon from "../shared/Icon.svelte";
 	import type { IntegrationInfo, IntegrationMethod } from "../../types.js";
 	import {
@@ -29,7 +31,8 @@
 	let keyLabels = $state<Record<string, string>>({});
 	let codeInputs = $state<Record<string, string>>({});
 
-	const integrations = $derived(integrationState.integrations);
+	let { onClose }: { onClose?: () => void } = $props();
+	const integrations = $derived(integrationState.integrations.filter((i) => i.id !== NODECODE_PROVIDER_ID));
 
 	function toggleExpanded(id: string) {
 		expandedId = expandedId === id ? null : id;
@@ -115,6 +118,8 @@
 		return () => clearInterval(timer);
 	});
 </script>
+
+<NodecodeCard {onClose} />
 
 <div class="flex items-center justify-between mb-3">
 	<span class="text-xs text-text-muted font-medium uppercase tracking-wide font-brand">

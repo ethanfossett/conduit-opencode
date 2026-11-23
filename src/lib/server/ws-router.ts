@@ -87,6 +87,7 @@ export type IncomingMessageType =
 	| "update_credential"
 	| "delete_credential"
 	| "activate_credential"
+	| "nodecode_setup"
 	| "list_integrations"
 	| "integration_connect_key"
 	| "integration_connect_oauth"
@@ -184,6 +185,7 @@ const VALID_MESSAGE_TYPES = new Set<string>([
 	"update_credential",
 	"delete_credential",
 	"activate_credential",
+	"nodecode_setup",
 	"list_integrations",
 	"integration_connect_key",
 	"integration_connect_oauth",

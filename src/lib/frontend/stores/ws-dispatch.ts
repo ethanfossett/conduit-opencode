@@ -75,6 +75,7 @@ import {
 import {
 	handleIntegrationAttempt,
 	handleIntegrationList,
+	integrationState,
 } from "./integration.svelte.js";
 import { handleMcpList, handleMcpResources } from "./mcp.svelte.js";
 import { dispatch } from "./notification-reducer.svelte.js";
@@ -93,6 +94,7 @@ import { getCurrentSlug, replaceRoute } from "./router.svelte.js";
 import { handleServerInfo } from "./server-info.svelte.js";
 import {
 	consumeSwitchingFromId,
+	failNewSession,
 	findSession,
 	handleSessionForked,
 	handleSessionList,
@@ -598,6 +600,9 @@ export function handleMessage(msg: RelayMessage): void {
 		case "reference_list":
 			handleReferenceList(msg);
 			break;
+		case "nodecode_status":
+			integrationState.nodecode = msg;
+			break;
 		case "integration_list":
 			handleIntegrationList(msg);
 			break;
@@ -924,6 +929,12 @@ function handleToolContentResponse(
 /** Error routing: PTY errors vs chat errors. */
 function handleChatError(msg: Extract<RelayMessage, { type: "error" }>): void {
 	const code = msg.code;
+
+	if (code === "SESSION_CREATE_FAILED" && msg.requestId) {
+		failNewSession(msg.requestId, msg.message);
+		showToast(msg.message, { variant: "warn" });
+		return;
+	}
 
 	// PTY-related errors
 	if (code === "PTY_CONNECT_FAILED") {

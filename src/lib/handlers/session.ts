@@ -304,14 +304,40 @@ export async function handleNewSession(
 	clientId: string,
 	payload: PayloadMap["new_session"],
 ): Promise<void> {
-	const { title, requestId } = payload;
-	const session = await deps.sessionMgr.createSession(title, { silent: true });
+	const { title, requestId, model } = payload;
+	let session: Awaited<ReturnType<typeof deps.sessionMgr.createSession>>;
+	try {
+		session = await deps.sessionMgr.createSession(title, {
+			silent: true,
+			...(model && { model }),
+		});
+	} catch (err) {
+		if (!requestId) throw err;
+		deps.wsHandler.sendTo(clientId, {
+			type: "error",
+			code: "SESSION_CREATE_FAILED",
+			requestId,
+			message: model
+				? "Could not create a chat with this model. Check whether it is still available."
+				: "Could not create a chat. Try again.",
+		});
+		return;
+	}
 
 	await switchClientToSession(toSessionSwitchDeps(deps), clientId, session.id, {
 		...(requestId != null && { requestId }),
 		skipHistory: true,
 		skipPollerSeed: true,
 	});
+
+	if (session.modelID && session.providerID) {
+		deps.wsHandler.sendTo(clientId, {
+			type: "model_info",
+			model: session.modelID,
+			provider: session.providerID,
+			sessionId: session.id,
+		});
+	}
 
 	// Session list broadcast — non-blocking so session_switched reaches the
 	// client immediately without waiting for the listSessions() API call.

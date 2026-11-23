@@ -110,6 +110,14 @@ const VALIDATORS: Partial<Record<keyof PayloadMap, Guard>> = {
 			(q) => (isObject(q["answers"]) ? null : '"answers" must be an object'),
 		),
 	question_reject: (p) => requireString(p, "toolId"),
+	new_session: (p) => {
+		const model = p["model"];
+		if (model === undefined) return null;
+		if (!isObject(model)) return '"model" must be an object';
+		return (
+			requireString(model, "providerID") ?? requireString(model, "modelID")
+		);
+	},
 	switch_session: (p) => requireString(p, "sessionId"),
 	view_session: (p) => requireString(p, "sessionId"),
 	delete_session: (p) => requireString(p, "sessionId"),
@@ -289,6 +297,18 @@ const VALIDATORS: Partial<Record<keyof PayloadMap, Guard>> = {
 		),
 	delete_credential: (p) => requireString(p, "credentialId"),
 	activate_credential: (p) => requireString(p, "credentialId"),
+	nodecode_setup: (p) => {
+		const action = p["action"];
+		if (action !== "status" && action !== "connect" && action !== "test") {
+			return '"action" must be status, connect, or test';
+		}
+		return (
+			requireString(p, "requestId") ??
+			(action === "connect"
+				? requireString(p, "key")
+				: optionalString(p, "key"))
+		);
+	},
 	list_integrations: () => null,
 	integration_connect_key: (p) =>
 		first(

@@ -208,6 +208,7 @@ import {
 	handleSwitchModel,
 	handleSwitchVariant,
 } from "./model.js";
+import { handleNodecode } from "./nodecode.js";
 import type { PayloadMap } from "./payloads.js";
 import {
 	handleAskUserResponse,
@@ -343,6 +344,7 @@ export const MESSAGE_HANDLERS: Record<keyof PayloadMap, MessageHandler> = {
 	update_credential: handleUpdateCredential as MessageHandler,
 	delete_credential: handleDeleteCredential as MessageHandler,
 	activate_credential: handleActivateCredential as MessageHandler,
+	nodecode_setup: handleNodecode as MessageHandler,
 	list_integrations: handleListIntegrations as MessageHandler,
 	integration_connect_key: handleIntegrationConnectKey as MessageHandler,
 	integration_connect_oauth: handleIntegrationConnectOAuth as MessageHandler,
