@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { onMount, tick } from "svelte";
+	import ChatDictation from "../components/chat/ChatDictation.svelte";
+	import { createChatSpeech } from "../utils/chat-speech.svelte.js";
 	import type { ChatAttachment, ChatConversation, ChatSearchResult, ChatSummary, ChatTurnRequest } from "../../chat/types.js";
 	import { clearAcceptedDraft, draftKey, loadDraft, saveDraft } from "../utils/drafts.js";
 	import { renderMarkdown } from "../utils/markdown.js";
@@ -32,6 +34,8 @@
 	let refreshingId: string | null = null;
 	let offline = $state(false);
 	let feedback = $state("");
+	let dictationActive = $state(false);
+	const speech = createChatSpeech();
 	let conversations = $state<ChatSummary[]>([]);
 	let chat = $state<ChatConversation | null>(null);
 	let text = $state("");
@@ -208,6 +212,7 @@
 	});
 
 	function display(conversation: ChatConversation | null) {
+		speech.stop();
 		chat = conversation;
 		showManage = false;
 		titleDraft = conversation?.title ?? "";
@@ -247,6 +252,7 @@
 	}
 
 	onMount(() => {
+		const unmountSpeech = speech.mount();
 		void run(async () => {
 			try {
 				await refresh();
@@ -263,6 +269,7 @@
 		window.addEventListener("pageshow", recover);
 		document.addEventListener("visibilitychange", recover);
 		return () => {
+			unmountSpeech();
 			window.removeEventListener("online", recover);
 			window.removeEventListener("pageshow", recover);
 			document.removeEventListener("visibilitychange", recover);
@@ -377,7 +384,8 @@
 
 	function runTurn(request: Omit<ChatTurnRequest, "requestId">, submitted?: string) {
 		const conversation = chat;
-		if (!conversation || sending) return;
+		if (!conversation || sending || dictationActive) return;
+		speech.stop();
 		const pending = readPending(conversation);
 		const requestId = submitted !== undefined && pending?.text === submitted
 			? pending.requestId : crypto.randomUUID();
@@ -417,11 +425,21 @@
 		});
 	}
 
+	function appendDictation(id: string, transcript: string) {
+		if (chat?.id !== id) return false;
+		const separator = text && !/\s$/.test(text) ? " " : "";
+		const updated = `${text}${separator}${transcript}`;
+		if (updated.length > 24_000) return false;
+		text = updated;
+		if (storageKey && editFrom === null) saveDraft(storageKey, text);
+		return true;
+	}
+
 	function send(event: SubmitEvent) {
 		event.preventDefault();
 		const conversation = chat;
 		const prompt = text.trim();
-		if (!conversation || !prompt || busy || sending || showHandoff) return;
+		if (!conversation || !prompt || busy || sending || showHandoff || dictationActive) return;
 		const submission = {
 			text: prompt,
 			...(attachments.length ? { attachments } : {}),
@@ -551,11 +569,20 @@
 										<button type="button" class="underline" onclick={() => copy(message.text)}>Copy</button>
 										<button type="button" class="underline" disabled={busy || sending} onclick={() => prepareHandoff(message.text)}>Continue in Code</button>
 										{#if turnsEnabled && index === lastPrompt && message.role === "user"}
-											<button type="button" class="underline" disabled={busy || sending || editFrom !== null} onclick={() => beginEdit(index)}>Edit prompt</button>
+											<button type="button" class="underline" disabled={busy || sending || editFrom !== null || dictationActive} onclick={() => beginEdit(index)}>Edit prompt</button>
+										{/if}
+										{#if message.role === "assistant" && speech.state.available}
+											{#if speech.state.index === index}
+												<button type="button" class="underline" onclick={speech.togglePause}>{speech.state.paused ? "Resume playback" : "Pause playback"}</button>
+												<button type="button" class="underline" onclick={speech.stop}>Stop playback</button>
+											{:else}
+												<button type="button" class="underline" disabled={dictationActive} onclick={() =>
+													speech.play(index, renderMarkdown(message.text, chatMarkdown))}>Read aloud</button>
+											{/if}
 										{/if}
 										{#if turnsEnabled && message.role === "assistant"}
 											{#if index === visibleMessages.length - 1}
-												<button type="button" class="underline" disabled={busy || sending || editFrom !== null} onclick={() => runTurn({ regenerate: true })}>Regenerate</button>
+												<button type="button" class="underline" disabled={busy || sending || editFrom !== null || dictationActive} onclick={() => runTurn({ regenerate: true })}>Regenerate</button>
 											{/if}
 											{#if !chat.temporary}
 												<button type="button" class="underline" disabled={busy || sending} onclick={() => branch(index + 1)}>Branch from reply</button>
@@ -641,7 +668,7 @@
 					{/if}
 					<form class="mx-auto w-full max-w-2xl space-y-2 p-4" onsubmit={send}>
 						{#if editFrom !== null}
-							<p class="flex justify-between text-xs text-text-muted">Editing the latest prompt <button type="button" class="underline" onclick={endEdit}>Cancel edit</button></p>
+							<p class="flex justify-between text-xs text-text-muted">Editing the latest prompt <button type="button" class="underline" disabled={dictationActive} onclick={endEdit}>Cancel edit</button></p>
 						{/if}
 						<label class="sr-only" for="chat-message">Message</label>
 						<textarea id="chat-message" placeholder="Message Cyber v1" maxlength="24000" rows="3" disabled={busy || sending} bind:value={text} oninput={(event) => {
@@ -654,15 +681,21 @@
 								{/each}
 							</ul>
 						{/if}
-						<div class="flex items-center justify-between gap-2 text-sm">
+						<div class="flex flex-wrap items-center justify-between gap-2 text-sm">
 							<label class="cursor-pointer text-text-muted underline">Attach text files<input type="file" accept="text/*,.md,.json,.csv,.log" multiple disabled={busy} onchange={attach} class="sr-only" /></label>
+							{#each [chat.id] as dictationChatId (dictationChatId)}
+								<ChatDictation disabled={busy || sending || showHandoff}
+									onCapture={speech.stop}
+									onActivity={(active) => (dictationActive = active)}
+									onTranscript={(transcript) => appendDictation(dictationChatId, transcript)} />
+							{/each}
 							{#if searchEnabled}
 								<button type="button" class="text-text-muted underline" disabled={busy} aria-expanded={showSearch} onclick={() => {
 									if (showSearch) resetSearch();
 									else showSearch = true;
 								}}>Web search</button>
 							{/if}
-							<button type="submit" disabled={busy || sending || showHandoff || !text.trim()} class="rounded-lg bg-accent px-4 py-2 text-bg disabled:opacity-50">{editFrom === null ? "Send" : "Send edit"}</button>
+							<button type="submit" disabled={busy || sending || showHandoff || dictationActive || !text.trim()} class="rounded-lg bg-accent px-4 py-2 text-bg disabled:opacity-50">{editFrom === null ? "Send" : "Send edit"}</button>
 						</div>
 						<p class="text-xs text-text-muted">NodeCode receives the message, recent context, and any files you attach.</p>
 					</form>
@@ -673,6 +706,7 @@
 					</div>
 				{/if}
 				<span class="sr-only" role="status">{feedback}</span>
+				{#if speech.state.error}<p class="px-4 pb-3 text-sm text-error" role="alert">{speech.state.error}</p>{/if}
 				{#if error}<p class="px-4 pb-3 text-sm text-error" role="alert">{error}</p>{/if}
 			</main>
 		</div>

@@ -86,3 +86,13 @@ The browser starts a turn with `POST /api/chat/:id/turns` and a UUID. The relay 
 **Stop** cancels the active request. Regenerate and edit target the latest prompt and preserve the previous completed turn until its replacement succeeds. Editing reuses previous attachments and sources unless the submitted edit supplies replacements. A reply can be branched into a separate saved conversation. Rename, pin, archive, restore, and JSON export are available under **Manage chat**. Inbox search matches saved conversation titles and message text on the relay.
 
 The turn logic is in `src/lib/chat/service.ts`, the fixed provider stream in `src/lib/chat/nodecode-stream.ts`, and the browser recovery test in `test/e2e/specs/conversation.spec.ts`. Temporary Chat and Code continue to use their existing separate state and routes.
+
+## Voice in Chat
+
+**Dictate** records after a user gesture and stops on a second tap, after one minute, or when the app leaves the foreground. Chat sends the audio to the authenticated `/api/stt` route and displays an editable transcript in the current draft. The route requires the configured Whisper endpoint to be loopback for Chat requests and rejects upstream redirects. A failed upload can be retried while the conversation is open. Temporary chats keep their drafts in memory, and saved chats persist completed transcripts like typed drafts.
+
+The default server endpoint is `http://127.0.0.1:8178/inference`. Run an existing whisper.cpp server bound to loopback with `--convert` for browser audio and a private runtime directory for `--tmp-dir`. Use `--no-gpu` if no GPU memory is available. The Whisper provider receives the recording. NodeCode receives the text only when the user sends the draft.
+
+**Read aloud** uses a voice reported as local by the browser. It has pause, resume, and stop controls and releases playback when leaving the chat. Devices without an available on-device voice show a message when the user tries to play a reply.
+
+The browser controls live in `ChatDictation.svelte` and `chat-speech.svelte.ts`. The replay tests cover microphone release on visibility change, retry without sending, draft reload, and speech controls. To test on an actual iPhone, accept microphone permission, record a phrase, switch apps while recording, then reopen Chat and check the editable transcript and the iOS microphone indicator.

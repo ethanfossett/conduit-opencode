@@ -163,10 +163,14 @@ export class RequestRouter {
 		const pathname = url.pathname;
 		const isChatApi =
 			pathname === "/api/chat" || pathname.startsWith("/api/chat/");
+		const isChatDictation =
+			pathname === "/api/stt" &&
+			req.headers["x-conduit-local-dictation"] === "1";
 
 		try {
-			// Chat is same-origin, including preflight and authentication responses.
-			if (!isChatApi) res.setHeader("Access-Control-Allow-Origin", "*");
+			// Chat and Chat dictation are same-origin.
+			if (!isChatApi && !isChatDictation)
+				res.setHeader("Access-Control-Allow-Origin", "*");
 			res.setHeader(
 				"Access-Control-Allow-Methods",
 				"GET, POST, PATCH, DELETE, OPTIONS",
@@ -585,10 +589,28 @@ export class RequestRouter {
 	): Promise<boolean> {
 		if (pathname !== "/api/stt" || req.method !== "POST") return false;
 
+		const localOnly = req.headers["x-conduit-local-dictation"] === "1";
 		const sttUrl =
 			process.env["CONDUIT_STT_URL"] ?? "http://127.0.0.1:8178/inference";
+		if (localOnly) res.setHeader("Cache-Control", "no-store");
 		try {
-			const audio = await readRawBody(req);
+			const endpoint = new URL(sttUrl);
+			if (localOnly) {
+				// A Chat recording must stay on this host, including redirects.
+				if (endpoint.hostname === "localhost") endpoint.hostname = "127.0.0.1";
+				if (
+					!["127.0.0.1", "[::1]"].includes(endpoint.hostname) ||
+					!["http:", "https:"].includes(endpoint.protocol) ||
+					endpoint.username ||
+					endpoint.password
+				) {
+					throw new Error("Local dictation is unavailable.");
+				}
+			}
+			const audio = await readRawBody(
+				req,
+				localOnly ? 8 * 1024 * 1024 : undefined,
+			);
 			if (audio.length === 0) {
 				res.writeHead(400, { "Content-Type": "application/json" });
 				res.end(
@@ -623,30 +645,37 @@ export class RequestRouter {
 
 			const controller = new AbortController();
 			const timer = setTimeout(() => controller.abort(), 120_000);
-			let upstream: Response;
+			const onClose = () => controller.abort();
+			if (localOnly) res.once("close", onClose);
+			let payload: { text?: string };
 			try {
-				upstream = await fetch(sttUrl, {
+				const upstream = await fetch(endpoint, {
 					method: "POST",
 					body: form,
 					signal: controller.signal,
+					...(localOnly && { redirect: "error" }),
 				});
+				if (!upstream.ok)
+					throw new Error(`stt server responded ${upstream.status}`);
+				payload = (await upstream.json()) as { text?: string };
 			} finally {
 				clearTimeout(timer);
+				if (localOnly) res.off("close", onClose);
 			}
-			if (!upstream.ok)
-				throw new Error(`stt server responded ${upstream.status}`);
-
-			const payload = (await upstream.json()) as { text?: string };
 			res.writeHead(200, { "Content-Type": "application/json" });
 			res.end(JSON.stringify({ text: (payload.text ?? "").trim() }));
 		} catch (error) {
+			if (res.destroyed) return true;
 			res.writeHead(503, { "Content-Type": "application/json" });
 			res.end(
 				JSON.stringify({
 					error: {
 						code: "STT_UNAVAILABLE",
-						message:
-							error instanceof Error ? error.message : "Speech-to-text failed",
+						message: localOnly
+							? "Local dictation is unavailable."
+							: error instanceof Error
+								? error.message
+								: "Speech-to-text failed",
 					},
 				} satisfies ApiError),
 			);

@@ -1175,3 +1175,47 @@ describe("durable Chat turns and inbox", () => {
 		}
 	});
 });
+
+it("keeps Chat dictation on loopback even when the configured endpoint redirects", async () => {
+	let forwarded = 0;
+	const upstream = createServer((req, res) => {
+		if (req.url === "/redirect") {
+			res.writeHead(307, { Location: "/elsewhere" }).end();
+		} else {
+			forwarded++;
+			res.writeHead(200).end('{"text":"Unexpected forwarding"}');
+		}
+	});
+	await new Promise<void>((resolve) =>
+		upstream.listen(0, "127.0.0.1", resolve),
+	);
+	const address = upstream.address();
+	if (!address || typeof address === "string")
+		throw new Error("Missing test endpoint");
+	const app = createTestServer();
+	await app.start();
+	try {
+		const transcribe = () =>
+			fetch(app.url("/api/stt"), {
+				method: "POST",
+				headers: {
+					"Content-Type": "audio/mp4",
+					"X-Conduit-Local-Dictation": "1",
+				},
+				body: "test audio",
+			});
+		vi.stubEnv("CONDUIT_STT_URL", "http://192.0.2.1/inference");
+		const denied = await transcribe();
+		expect(denied.status).toBe(503);
+		expect(denied.headers.get("Cache-Control")).toBe("no-store");
+		expect(denied.headers.get("Access-Control-Allow-Origin")).toBeNull();
+
+		vi.stubEnv("CONDUIT_STT_URL", `http://127.0.0.1:${address.port}/redirect`);
+		expect((await transcribe()).status).toBe(503);
+		expect(forwarded).toBe(0);
+	} finally {
+		vi.unstubAllEnvs();
+		await app.stop();
+		await new Promise<void>((resolve) => upstream.close(() => resolve()));
+	}
+});

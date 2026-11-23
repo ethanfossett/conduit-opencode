@@ -216,3 +216,182 @@ test("an accepted Chat turn recovers after reload and is searchable once complet
 		text: "Revised checkpoint prompt",
 	});
 });
+
+test("Chat dictation releases the microphone on interruption and saves reviewed text", async ({
+	page,
+	relayUrl,
+}) => {
+	const id = crypto.randomUUID();
+	let submissions = 0;
+	let dictations = 0;
+	await page.addInitScript(() => {
+		const state = { released: false, hidden: false };
+		Object.assign(window, { voiceTest: state });
+		Object.defineProperty(document, "hidden", {
+			get: () => state.hidden,
+			configurable: true,
+		});
+		const track = new EventTarget();
+		Object.assign(track, {
+			stop: () => {
+				state.released = true;
+			},
+		});
+		Object.defineProperty(navigator, "mediaDevices", {
+			value: { getUserMedia: async () => ({ getTracks: () => [track] }) },
+		});
+		class TestRecorder {
+			static isTypeSupported() {
+				return true;
+			}
+			state = "inactive";
+			mimeType = "audio/mp4";
+			ondataavailable?: (event: { data: Blob }) => void;
+			onstop?: () => void;
+			start() {
+				this.state = "recording";
+			}
+			stop() {
+				this.state = "inactive";
+				setTimeout(() => {
+					this.ondataavailable?.({
+						data: new Blob(["sample"], { type: "audio/mp4" }),
+					});
+					this.onstop?.();
+				});
+			}
+		}
+		Object.defineProperty(window, "MediaRecorder", {
+			value: TestRecorder,
+			configurable: true,
+		});
+	});
+	await page.route(
+		(url) => url.pathname.startsWith("/api/chat"),
+		async (route) => {
+			if (route.request().method() === "POST") submissions++;
+			const data = {
+				id,
+				title: "Voice test",
+				updatedAt: Date.now(),
+				temporary: false,
+				messages: [],
+			};
+			return route.fulfill({
+				json:
+					new URL(route.request().url()).pathname === "/api/chat"
+						? {
+								enabled: true,
+								searchEnabled: false,
+								turnsEnabled: true,
+								conversations: [data],
+							}
+						: data,
+			});
+		},
+	);
+	await page.route("**/api/stt", async (route) => {
+		dictations++;
+		expect(route.request().headers()["x-conduit-local-dictation"]).toBe("1");
+		expect(route.request().headers()["content-type"]).toBe("audio/mp4");
+		if (dictations === 1) return route.abort("internetdisconnected");
+		return route.fulfill({ json: { text: "review this transcript" } });
+	});
+	await page.goto(new URL(`/chat?c=${id}`, relayUrl).href);
+	const composer = page.getByRole("textbox", { name: "Message", exact: true });
+	await composer.fill("Existing draft");
+	await page.getByRole("button", { name: "Dictate", exact: true }).click();
+	await expect(
+		page.getByRole("button", { name: "Stop dictation" }),
+	).toBeVisible();
+	await page.evaluate(() => {
+		const testState = (window as unknown as { voiceTest: { hidden: boolean } })
+			.voiceTest;
+		testState.hidden = true;
+		document.dispatchEvent(new Event("visibilitychange"));
+		testState.hidden = false;
+	});
+	await expect(
+		page.getByRole("button", { name: "Retry dictation" }),
+	).toBeVisible();
+	expect(
+		await page.evaluate(
+			() =>
+				(window as unknown as { voiceTest: { released: boolean } }).voiceTest
+					.released,
+		),
+	).toBe(true);
+	await page.getByRole("button", { name: "Retry dictation" }).click();
+	await expect(composer).toHaveValue("Existing draft review this transcript");
+	await page.reload();
+	await expect(composer).toHaveValue("Existing draft review this transcript");
+	expect(dictations).toBe(2);
+	expect(submissions).toBe(0);
+});
+
+test("Chat read-aloud selects an on-device voice and supports playback controls", async ({
+	page,
+	relayUrl,
+}) => {
+	const id = crypto.randomUUID();
+	await page.addInitScript(() => {
+		const calls: string[] = [];
+		Object.assign(window, { speechCalls: calls });
+		Object.defineProperty(window, "SpeechSynthesisUtterance", {
+			value: class {
+				text: string;
+				constructor(text: string) {
+					this.text = text;
+				}
+			},
+			configurable: true,
+		});
+		Object.defineProperty(window, "speechSynthesis", {
+			value: {
+				getVoices: () => [
+					{ default: true, localService: false, lang: "en-US", name: "Remote" },
+					{ default: false, localService: true, lang: "en-US", name: "Local" },
+				],
+				speak: (message: SpeechSynthesisUtterance) =>
+					calls.push(`${message.voice?.name}: ${message.text}`),
+				pause: () => calls.push("pause"),
+				resume: () => calls.push("resume"),
+				cancel: () => calls.push("cancel"),
+			},
+			configurable: true,
+		});
+	});
+	await page.route(
+		(url) => url.pathname.startsWith("/api/chat"),
+		async (route) => {
+			const data = {
+				id,
+				title: "Read-aloud test",
+				updatedAt: Date.now(),
+				temporary: false,
+				messages: [{ role: "assistant", text: "**Ready** to listen." }],
+			};
+			return route.fulfill({
+				json:
+					new URL(route.request().url()).pathname === "/api/chat"
+						? {
+								enabled: true,
+								searchEnabled: false,
+								turnsEnabled: true,
+								conversations: [data],
+							}
+						: data,
+			});
+		},
+	);
+	await page.goto(new URL(`/chat?c=${id}`, relayUrl).href);
+	await page.getByRole("button", { name: "Read aloud" }).click();
+	await page.getByRole("button", { name: "Pause playback" }).click();
+	await page.getByRole("button", { name: "Resume playback" }).click();
+	await page.getByRole("button", { name: "Stop playback" }).click();
+	expect(
+		await page.evaluate(
+			() => (window as unknown as { speechCalls: string[] }).speechCalls,
+		),
+	).toEqual(["Local: Ready to listen.", "pause", "resume", "cancel"]);
+});
