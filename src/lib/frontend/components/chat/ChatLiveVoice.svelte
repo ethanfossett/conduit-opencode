@@ -24,6 +24,9 @@
 	let startup: ReturnType<typeof setTimeout> | undefined;
 	let network: ReturnType<typeof setTimeout> | undefined;
 	let keepalive: ReturnType<typeof setInterval> | undefined;
+	let activity: ReturnType<typeof setInterval> | undefined;
+	let duckTimer: ReturnType<typeof setTimeout> | undefined;
+	let volume: GainNode | undefined;
 	let epoch = 0;
 	let rate = 24_000;
 	let next = 0;
@@ -61,6 +64,7 @@
 		clearAudio();
 		send({ kind: "flush" });
 		hearing = false;
+		restoreVolume();
 		if (audio?.state === "suspended") void audio.resume().catch(() => {});
 		if (id && truncated) await onInterrupt(id, heard);
 	}
@@ -72,6 +76,8 @@
 		clearTimeout(startup);
 		clearTimeout(network);
 		clearInterval(keepalive);
+		clearInterval(activity);
+		clearTimeout(duckTimer);
 		send({ kind: "close" });
 		channel?.close();
 		peer?.close();
@@ -82,6 +88,7 @@
 		clearAudio();
 		if (audio) void audio.close().catch(() => {});
 		audio = undefined;
+		volume = undefined;
 		status = "idle";
 		hold = false;
 		muted = false;
@@ -95,6 +102,38 @@
 		outputFinished = false;
 		hearing = false;
 		onActivity(false);
+	}
+
+	function restoreVolume() {
+		clearTimeout(duckTimer);
+		if (audio && volume) volume.gain.setTargetAtTime(1, audio.currentTime, 0.025);
+	}
+
+	function monitorMicrophone(ctx: AudioContext, stream: MediaStream) {
+		const input = ctx.createMediaStreamSource(stream);
+		const meter = ctx.createAnalyser();
+		meter.fftSize = 1024;
+		const silent = ctx.createGain();
+		silent.gain.value = 0;
+		input.connect(meter).connect(silent).connect(ctx.destination);
+		const samples = new Float32Array(meter.fftSize);
+		let loud = 0;
+		activity = setInterval(() => {
+			if (ctx.state !== "running" || muted || !volume || next < ctx.currentTime || hearing) {
+				loud = 0;
+				return;
+			}
+			meter.getFloatTimeDomainData(samples);
+			let energy = 0;
+			for (const sample of samples) energy += sample * sample;
+			loud = energy / samples.length > 0.00045 ? loud + 1 : 0;
+			if (loud !== 2) return;
+			// The speaker reacts first. Only the local speech detector and
+			// transcript can actually cancel the turn or submit a correction.
+			volume.gain.setTargetAtTime(0.12, ctx.currentTime, 0.012);
+			clearTimeout(duckTimer);
+			duckTimer = setTimeout(restoreVolume, 360);
+		}, 30);
 	}
 
 	function play(pcm: string) {
@@ -112,7 +151,7 @@
 		for (let index = 0; index < samples.length; index++) samples[index] = data.getInt16(index * 2, true) / 32768;
 		const player = ctx.createBufferSource();
 		player.buffer = buffer;
-		player.connect(ctx.destination);
+		player.connect(volume ?? ctx.destination);
 		if (next < ctx.currentTime) next = ctx.currentTime + 0.04;
 		sources.add(player);
 		player.onended = () => {
@@ -203,6 +242,7 @@
 		} else if (data.kind === "speech-start") {
 			hearing = !!(currentId && (!outputFinished || pendingPhrases || offset < lastReply.length || sources.size));
 			if (hearing) {
+				clearTimeout(duckTimer);
 				send({ kind: "pause-output", enabled: true });
 				if (audio?.state === "running") void audio.suspend().catch(() => {});
 			}
@@ -214,6 +254,7 @@
 			const backchannel = /^(?:m+h+m+|mm[ -]?hmm|uh[ -]?huh|yeah|okay|ok|right|thanks|thank you)[.!?,]*$/i.test(said);
 			if (!said || (hearing && backchannel)) {
 				hearing = false;
+				restoreVolume();
 				send({ kind: "pause-output", enabled: false });
 				if (audio?.state === "suspended") await audio.resume();
 				return;
@@ -221,7 +262,7 @@
 			transcript = said;
 			note = "";
 			if (hearing || (currentId && !outputFinished && interruptedId !== currentId)) await interrupt();
-			if (!/^stop[.!?]?$/i.test(said)) await onTranscript(said);
+			if (!/^(?:stop|wait|hold on|one second)[.!?]?$/i.test(said)) await onTranscript(said);
 		} else if (data.kind === "audio" && data.id === currentId && data.id !== interruptedId && typeof data.pcm === "string") {
 			play(data.pcm);
 		} else if (data.kind === "audio-end" && data.id === currentId && data.id !== interruptedId && Number.isInteger(data.end)) {
@@ -235,6 +276,7 @@
 				send({ kind: "flush" });
 			}
 			note = data.kind === "transcript-error" ? "Could not transcribe. Try again." : "Local speech synthesis paused.";
+			restoreVolume();
 			send({ kind: "pause-output", enabled: false });
 			if (audio?.state === "suspended") void audio.resume().catch(() => {});
 		}
@@ -249,6 +291,8 @@
 		try {
 			const ctx = new AudioContext({ latencyHint: "interactive" });
 			audio = ctx;
+			volume = ctx.createGain();
+			volume.connect(ctx.destination);
 			await ctx.resume();
 			if (run !== epoch) return;
 			const stream = await navigator.mediaDevices.getUserMedia({
@@ -259,6 +303,7 @@
 				return;
 			}
 			mic = stream;
+			monitorMicrophone(ctx, stream);
 			const pc = new RTCPeerConnection({ iceServers: [], bundlePolicy: "max-bundle" });
 			peer = pc;
 			for (const track of stream.getAudioTracks()) pc.addTransceiver(track, { direction: "sendonly" });

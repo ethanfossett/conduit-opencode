@@ -1012,7 +1012,12 @@ export function createConfiguredChat(
 	return new ChatService(
 		directory,
 		(input, signal, onText, reasoning, model) => {
-			if (localPort && model === localModel && model !== NODECODE_MODEL_ID) {
+			if (
+				localPort &&
+				localModel &&
+				model === localModel &&
+				model !== NODECODE_MODEL_ID
+			) {
 				if (codePorts().includes(localPort))
 					throw new Error("The local Chat port is assigned to Code.");
 				return streamNodeCode(

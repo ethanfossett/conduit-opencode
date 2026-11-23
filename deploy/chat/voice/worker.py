@@ -80,7 +80,7 @@ class VoiceInput(FrameProcessor):
     def __init__(self, send):
         super().__init__()
         self.send = send
-        self.pre_roll = deque(maxlen=12)
+        self.pre_roll = deque(maxlen=34)
         self.audio = None
         self.speaking = False
         self.last_stop = 0.0
@@ -221,7 +221,7 @@ class Session:
             audio_in_enabled=True, audio_in_sample_rate=RATE, audio_out_enabled=False,
         ))
         vad = VADProcessor(vad_analyzer=SileroVADAnalyzer(params=VADParams(
-            start_secs=0.16, stop_secs=0.42, min_volume=0.3,
+            start_secs=0.10, stop_secs=0.42, min_volume=0.2,
         )))
         self.task = PipelineTask(Pipeline([transport.input(), vad, self.input]), params=PipelineParams(
             audio_in_sample_rate=RATE, enable_metrics=False,
