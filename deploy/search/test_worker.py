@@ -1,6 +1,6 @@
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import worker
 
@@ -23,6 +23,29 @@ class SearchWorkerTest(unittest.TestCase):
             sources = worker.search("reviewed query", "test-key")
         self.assertIn("q=reviewed+query", request.call_args.args[0])
         self.assertEqual(sources[0]["title"], "Example & more")
+
+    def test_keyless_search_checks_exit_before_querying_local_engine(self):
+        with patch.object(worker, "verify_exit", side_effect=ValueError), patch.object(worker, "HTTPConnection") as engine:
+            with self.assertRaises(ValueError):
+                worker.search("reviewed", "", "searxng")
+            engine.assert_not_called()
+
+        response = Mock(status=200)
+        response.read.return_value = json.dumps({
+            "results": [
+                {"url": "https://example.org/", "title": "Example", "content": "Snippet"},
+                {"url": "http://example.invalid/", "title": "Skip", "content": "Snippet"},
+            ],
+        }).encode()
+        with patch.object(worker, "verify_exit") as verify, patch.object(worker, "HTTPConnection") as engine:
+            engine.return_value.getresponse.return_value = response
+            results = worker.search("reviewed", "", "searxng")
+            verify.assert_called_once()
+            engine.assert_called_once_with("127.0.0.1", 8988, timeout=12)
+            args = engine.return_value.request.call_args.args
+            self.assertEqual(args[:2], ("POST", "/search"))
+            self.assertIn("q=reviewed", args[2])
+            self.assertEqual(results, [{"url": "https://example.org/", "title": "Example", "snippet": "Snippet"}])
 
     def test_disallows_local_url_and_any_nonpublic_address_in_dns_result(self):
         for url in (

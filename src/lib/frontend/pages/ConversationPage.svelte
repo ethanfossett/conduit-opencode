@@ -303,7 +303,7 @@
 						<section class="mx-auto max-h-[35dvh] w-full max-w-2xl space-y-3 overflow-auto border-t border-border p-4 text-sm" aria-label="Private web search">
 							<form class="space-y-2" onsubmit={search}>
 								<label class="block font-medium" for="search-query">Review your web query</label>
-								<p class="text-xs text-text-muted">Brave Search receives this query through Mullvad. Search starts when you select Run search.</p>
+								<p class="text-xs text-text-muted">The search provider receives this query through Mullvad. Search starts when you select Run search.</p>
 								<div class="flex flex-wrap gap-2">
 									<input id="search-query" class="min-w-0 flex-1 rounded border border-border bg-bg-surface p-2 text-base" bind:value={searchQuery} maxlength="400" disabled={busy} oninput={() => {
 										searchResult = null;

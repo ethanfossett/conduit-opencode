@@ -16,14 +16,14 @@ Conduit has a projectless conversation inbox for general Chat and a separate wor
 | NodeCode preview | Provider Setup and Code session model selection | Existing account inference and restored session in the local browser preview. Physical iPhone PWA check pending. |
 | Chat isolation | Dedicated model runtime, private home, separate network namespace with a fixed TLS bridge, authenticated relay routes | Relay routing and storage tests, plus live tool-free NodeCode generation in the isolated runtime. |
 | Chat inbox and temporary mode | Projectless routes, conversation history, text drafts and attachments, memory-only temporary chats | Desktop and mobile browser workflows and relay storage tests. |
-| Private search | Explicit query review, isolated Mullvad worker, reviewed snippets and page excerpts, citations | Worker and relay regressions, browser replay, and live fail-closed preview with the VPN disconnected. Successful Mullvad/Brave egress still requires active service credentials. |
+| Private search | Explicit query review, isolated Mullvad worker, reviewed snippets and page excerpts, citations | Worker and relay regressions, browser replay, and live fail-closed preview with the VPN disconnected. Keyless SearXNG search and live page reading were verified through a dedicated Mullvad tunnel. |
 | Code handoff | Review and edit one message, select a Code project, and create an unsent Code draft | Desktop and mobile browser replay creates a Code session, verifies the edited draft survives reload and detects any automatic send. |
 
 ## Privacy and release boundaries
 
 - Tailscale is the route from the phone to Conduit. Mullvad is the route from the search worker to the web.
 - A hosted model receives the prompt and any excerpts supplied for the answer. A search provider can see the query and any search account identifier. Keep those distinctions visible in the product.
-- Keep search disabled until the worker can prove its restricted egress. Use an existing Brave Search credential to enable search.
+- Keep search disabled until the worker can prove its restricted egress. Use an existing Brave Search credential or the bundled keyless SearXNG profile.
 - Keep machine-specific configs, account keys, saved conversations, and private preview addresses outside this public repository. Keep each milestone independently reviewable.
 
 ## Verification
@@ -41,8 +41,8 @@ Run `pnpm check`, `pnpm lint`, `pnpm test:unit`, and `pnpm build` from this chec
 The **Chat** link opens `/chat`. Conversations have their own authenticated HTTP routes and inbox. A dedicated OpenCode 2.x runtime performs a single stateless, tool-free text generation per turn. It uses the NodeCode Cyber v1 model and receives the recent transcript plus any explicitly attached plain text. OpenCode currently returns a complete reply from this tool-free endpoint. Code sessions continue to use their existing streaming path.
 
 1. On Linux, install Bubblewrap and socat, then use the OpenCode 2.x binary already available to the relay. Give the Chat runtime its own server password. Store the password and the regular NodeCode key in a protected environment file outside the checkout.
-2. Run `deploy/chat/run-opencode.sh` with `NODECODE_API_KEY` and `CONDUIT_CHAT_OPENCODE_PASSWORD` loaded into its environment. By default, the launcher binds port 4097, starts in an empty workspace, mounts a fresh home in memory, and passes only its dedicated provider and server credentials. Pin the OpenCode binary with `CONDUIT_CHAT_OPENCODE_BINARY` if needed.
-3. Set `CONDUIT_CHAT_OPENCODE_URL=http://127.0.0.1:4097` and the matching `CONDUIT_CHAT_OPENCODE_PASSWORD` in the Conduit process environment, then start the relay. Keep the Chat runtime's port out of the Code registry, public proxy, and Tailscale Serve configuration.
+2. Run `deploy/chat/run-opencode.sh` with `NODECODE_API_KEY` and `CONDUIT_CHAT_OPENCODE_PASSWORD` loaded into its environment. By default, the launcher binds port 4197, starts in an empty workspace, mounts a fresh home in memory, and passes only its dedicated provider and server credentials. Pin the OpenCode binary with `CONDUIT_CHAT_OPENCODE_BINARY` if needed.
+3. Set `CONDUIT_CHAT_OPENCODE_URL=http://127.0.0.1:4197` and the matching `CONDUIT_CHAT_OPENCODE_PASSWORD` in the Conduit process environment, then start the relay. Keep the Chat runtime's port out of the Code registry, public proxy, and Tailscale Serve configuration.
 
 The launcher uses an isolated Linux network namespace. Its only egress bridge forwards TLS connections to `api.nodecode.ai:443`. The runtime verifies the provider certificate. The only ingress is the dedicated loopback port via a private socket. The sandbox mounts system executables and certificate trust, plus an in-memory home and an empty workspace. Keep Code authenticated with separate credentials. The relay accepts no project, command, permission, or tool fields on Chat routes and refuses generation if a Code instance claims its port.
 
@@ -60,6 +60,12 @@ Chat shows **Web search** only when Conduit has a worker URL and token. Type and
 4. Verify a search and a page excerpt through the UI. Take the dedicated VPN service down, then verify that search and page reading return unavailable, ordinary Chat can still answer, and Tailscale still serves the relay. Bring the dedicated VPN instance back up and repeat the exit check.
 
 Every request uses Mullvad's in-tunnel SOCKS5 address with remote DNS. The worker verifies the Mullvad exit before transmitting a query or page hostname and has no alternate transport. Brave can associate the reviewed query with its API account. Page reading starts only from a current search result, resolves public IPv4 through Cloudflare DoH over the tunnel, pins the validated destination with TLS hostname verification, and rejects redirects, non-public IPs, non-text media and oversized responses. Pages available only over IPv6 may still appear as indexed snippets. External source links in the transcript open in the browser when clicked and use the browser's own connection.
+
+### Keyless SearXNG setup
+
+Use the same dedicated Mullvad configuration and worker token. Put `CONDUIT_CHAT_SEARCH_PROVIDER=searxng` in the worker environment. Set `CONDUIT_SEARXNG_SECRET` to a separate random value via a protected Compose environment file. Run Compose with `-f deploy/search/compose.yaml -f deploy/search/compose.searxng.yaml up -d --build`. Keep the order of the files so relative paths resolve against the search deployment directory.
+
+SearXNG listens on loopback inside the VPN namespace. Its engine connections use Mullvad's SOCKS5 proxy with remote DNS. The worker verifies exit before each search, sends only the reviewed query, and does not try another provider if the selected backend fails. Public search engines can throttle requests, and particular sites may reject excerpt fetching. The approved indexed results can still be used. The SearXNG container uses a disabled log driver because upstream errors may include query URLs.
 
 Run `python3 -B -m unittest discover -s deploy/search -v` for worker regressions. The worker has no Chat history or model credential mounts and deliberately omits request details from its logs.
 

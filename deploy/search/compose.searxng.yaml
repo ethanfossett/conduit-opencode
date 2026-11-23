@@ -1,0 +1,19 @@
+services:
+  searxng:
+    image: docker.io/searxng/searxng@sha256:a7fc607aa6723f5a8982105bcc5ffba4d1b9fc7c6922a31a88d6e4cba49ef12a
+    network_mode: service:mullvad
+    depends_on:
+      mullvad:
+        condition: service_healthy
+    environment:
+      GRANIAN_HOST: 127.0.0.1
+      GRANIAN_PORT: "8988"
+      SEARXNG_SECRET: "${CONDUIT_SEARXNG_SECRET:?Set a private SearXNG secret}"
+      FORCE_OWNERSHIP: "false"
+    volumes:
+      - ./searxng.yml:/etc/searxng/settings.yml:ro
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: none
+    restart: unless-stopped

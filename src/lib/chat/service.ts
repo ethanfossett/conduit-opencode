@@ -312,24 +312,14 @@ export function createConfiguredChat(
 	directory: string,
 	codePorts: () => number[],
 ): ChatService | undefined {
-	const configured = process.env["CONDUIT_CHAT_OPENCODE_URL"];
 	const password = process.env["CONDUIT_CHAT_OPENCODE_PASSWORD"];
-	if (!configured || !password) return undefined;
-	const endpoint = new URL(configured);
+	if (!password) return undefined;
+	const endpoint = configuredChatEndpoint();
+	if (!endpoint) return undefined;
 
 	// Dedicated loopback port and its own credentials are required. The relay
 	// never falls back to a Code instance for generation.
-	if (
-		endpoint.protocol !== "http:" ||
-		endpoint.hostname !== "127.0.0.1" ||
-		endpoint.pathname !== "/" ||
-		endpoint.search ||
-		endpoint.hash ||
-		endpoint.username ||
-		endpoint.password ||
-		!endpoint.port ||
-		codePorts().includes(Number(endpoint.port))
-	) {
+	if (codePorts().includes(Number(endpoint.port))) {
 		throw new Error("Chat requires its own OpenCode loopback port.");
 	}
 	const client = new OpenCodeClient({
@@ -347,4 +337,23 @@ export function createConfiguredChat(
 		},
 		createConfiguredSearch(),
 	);
+}
+
+export function configuredChatEndpoint(): URL | undefined {
+	const configured = process.env["CONDUIT_CHAT_OPENCODE_URL"];
+	if (!configured || !process.env["CONDUIT_CHAT_OPENCODE_PASSWORD"])
+		return undefined;
+	const endpoint = URL.parse(configured);
+	if (
+		endpoint?.protocol !== "http:" ||
+		endpoint.hostname !== "127.0.0.1" ||
+		endpoint.pathname !== "/" ||
+		endpoint.search ||
+		endpoint.hash ||
+		endpoint.username ||
+		endpoint.password ||
+		!endpoint.port
+	)
+		return undefined;
+	return endpoint;
 }

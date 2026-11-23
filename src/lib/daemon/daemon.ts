@@ -10,7 +10,11 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { AuthManager } from "../auth.js";
-import { type ChatService, createConfiguredChat } from "../chat/service.js";
+import {
+	type ChatService,
+	configuredChatEndpoint,
+	createConfiguredChat,
+} from "../chat/service.js";
 import {
 	ensureCerts,
 	getAllIPs,
@@ -400,8 +404,15 @@ export class Daemon {
 		// Rehydrate instances from persisted config (so relays can pick them up
 		// before HTTP/IPC servers start).
 		const savedConfig = loadDaemonConfig(this.configDir);
+		const chatPort = Number(configuredChatEndpoint()?.port);
 		if (savedConfig?.instances) {
 			for (const inst of savedConfig.instances) {
+				if (
+					inst.port === chatPort &&
+					inst.id === `discovered-${chatPort}` &&
+					!inst.managed
+				)
+					continue;
 				const existing = this.instanceManager.getInstance(inst.id);
 				if (existing) {
 					// Apply saved name to constructor-created instances (e.g. "default")
@@ -770,6 +781,7 @@ export class Daemon {
 					.filter((i) => i.managed)
 					.map((i) => i.port),
 			);
+			if (Number.isInteger(chatPort)) managedPorts.add(chatPort);
 			this.scanner.excludePorts(managedPorts);
 
 			this.scanner.on("scan", (result: ScanResult) => {

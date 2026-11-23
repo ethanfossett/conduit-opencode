@@ -3,7 +3,7 @@ set -euo pipefail
 
 : "${NODECODE_API_KEY:?Set the Chat provider key}"
 : "${CONDUIT_CHAT_OPENCODE_PASSWORD:?Set a separate Chat server password}"
-chat_port="${CONDUIT_CHAT_OPENCODE_PORT:-4097}"
+chat_port="${CONDUIT_CHAT_OPENCODE_PORT:-4197}"
 if [[ ! "$chat_port" =~ ^[0-9]{4,5}$ ]] || (( 10#$chat_port < 1024 || 10#$chat_port > 65535 )); then
   echo "Set CONDUIT_CHAT_OPENCODE_PORT to a dedicated port from 1024 to 65535." >&2
   exit 1

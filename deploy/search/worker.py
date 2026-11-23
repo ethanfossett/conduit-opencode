@@ -11,6 +11,7 @@ import sys
 import threading
 from html import unescape
 from html.parser import HTMLParser
+from http.client import HTTPConnection, HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlencode, urlsplit
 
@@ -57,8 +58,10 @@ def verify_exit():
         raise ValueError("Unverified Mullvad exit")
 
 
-def search(query, key):
+def search(query, key, provider="brave"):
     verify_exit()
+    if provider == "searxng":
+        return search_searxng(query)
     url = BRAVE_SEARCH + "?" + urlencode(
         {"q": query, "count": 5, "result_filter": "web", "text_decorations": "false"}
     )
@@ -73,6 +76,36 @@ def search(query, key):
         for item in results[:5]
         if isinstance(item, dict) and all(isinstance(item.get(field), str) for field in ("url", "title", "description"))
     ]
+
+
+def search_searxng(query):
+    # The engine is reachable only within the VPN namespace. POST keeps the
+    # query out of access-log URLs. SearXNG sends its own traffic via SOCKS5h.
+    engine = HTTPConnection("127.0.0.1", 8988, timeout=12)
+    try:
+        engine.request(
+            "POST", "/search",
+            urlencode({"q": query, "format": "json", "categories": "general"}),
+            {"Content-Type": "application/x-www-form-urlencoded", "X-Forwarded-For": "127.0.0.1"},
+        )
+        response = engine.getresponse()
+        data = response.read(256_001)
+        if response.status != 200 or len(data) > 256_000:
+            raise ValueError("Search engine unavailable")
+    finally:
+        engine.close()
+    payload = json.loads(data)
+    results = payload["results"]
+    if not results and payload.get("unresponsive_engines"):
+        raise ValueError("Search engines unavailable")
+    return [
+        {"url": item["url"][:2048], "title": unescape(item["title"])[:240],
+         "snippet": unescape(item["content"])[:1200]}
+        for item in results
+        if isinstance(item, dict)
+        and str(item.get("url", "")).startswith("https://")
+        and all(isinstance(item.get(field), str) for field in ("url", "title", "content"))
+    ][:5]
 
 
 def validate_page(url):
@@ -150,7 +183,7 @@ def read_page(url):
     return excerpt
 
 
-def serve(token, key, bind="127.0.0.1"):
+def serve(token, key, provider, bind="127.0.0.1"):
     slots = threading.BoundedSemaphore(2)
 
     class Handler(BaseHTTPRequestHandler):
@@ -198,8 +231,8 @@ def serve(token, key, bind="127.0.0.1"):
                     query = request["query"]
                     if not isinstance(query, str) or not query.strip() or len(query) > 400:
                         raise ValueError("Invalid query")
-                    result = {"sources": search(query, key)}
-            except (ValueError, KeyError, TypeError, AttributeError, OSError, subprocess.SubprocessError):
+                    result = {"sources": search(query, key, provider)}
+            except (ValueError, KeyError, TypeError, AttributeError, OSError, HTTPException, subprocess.SubprocessError):
                 self.respond(503, {"message": "Private search unavailable."})
                 return
             finally:
@@ -212,7 +245,12 @@ def serve(token, key, bind="127.0.0.1"):
 if __name__ == "__main__":
     worker_token = os.environ.get("CONDUIT_CHAT_SEARCH_TOKEN", "")
     search_key = os.environ.get("BRAVE_SEARCH_API_KEY", "")
-    if not re.fullmatch(r"[0-9a-f]{64}", worker_token) or not re.fullmatch(r"[A-Za-z0-9_.-]{8,256}", search_key):
-        raise SystemExit("Set a random 64-character hex worker token and the Brave Search API key.")
+    provider = os.environ.get("CONDUIT_CHAT_SEARCH_PROVIDER", "brave")
+    if not re.fullmatch(r"[0-9a-f]{64}", worker_token):
+        raise SystemExit("Set a random 64-character hex worker token.")
+    if provider not in ("brave", "searxng"):
+        raise SystemExit("Select brave or searxng in CONDUIT_CHAT_SEARCH_PROVIDER.")
+    if provider == "brave" and not re.fullmatch(r"[A-Za-z0-9_.-]{8,256}", search_key):
+        raise SystemExit("Set the Brave Search API key.")
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    serve(worker_token, search_key, os.environ.get("CONDUIT_CHAT_SEARCH_BIND", "127.0.0.1"))
+    serve(worker_token, search_key, provider, os.environ.get("CONDUIT_CHAT_SEARCH_BIND", "127.0.0.1"))
