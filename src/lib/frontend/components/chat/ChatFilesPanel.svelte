@@ -12,6 +12,7 @@
 		onChange,
 		onClose,
 		onBusy,
+		onDeleted,
 	}: {
 		chatId?: string;
 		temporary: boolean;
@@ -20,6 +21,7 @@
 		onChange: (files: DraftPdf[]) => void;
 		onClose: () => void;
 		onBusy: (busy: boolean) => void;
+		onDeleted: () => void;
 	} = $props();
 
 	let view = $state<View | null>(null);
@@ -30,6 +32,7 @@
 	let uses = $state<{ id: string; title: string }[]>([]);
 	let name = $state("");
 	let confirmDelete = $state(false);
+	let removeExcerpts = $state(true);
 	let working = $state(false);
 	let error = $state("");
 	let notice = $state("");
@@ -171,13 +174,14 @@
 		const id = details?.id;
 		if (!id) return;
 		void run(async () => {
-			await request(`/files/${id}`, "DELETE");
+			await request(`/files/${id}${removeExcerpts ? "?removeExcerpts=1" : ""}`, "DELETE");
+			onDeleted();
 			onChange(selected.filter(({ file }) => file.id !== id));
 			files = files.filter((file) => file.id !== id);
 			view = null;
 			details = null;
 			confirmDelete = false;
-			notice = "File deleted.";
+			notice = removeExcerpts ? "File and attached excerpts deleted." : "File deleted.";
 		});
 	}
 
@@ -231,11 +235,16 @@
 					<p class="text-text-muted">Used in {uses.map((chat) => chat.title).join(", ")}.</p>
 				{/if}
 				{#if confirmDelete}
-					<p>Delete the original and its searchable text? Existing conversations can retain excerpts they already used.</p>
+					<p>Delete the original and its searchable text from Conduit?</p>
+					<label class="flex items-start gap-2">
+						<input type="checkbox" bind:checked={removeExcerpts} disabled={working} />
+						<span>Remove attached excerpts and citations from conversations</span>
+					</label>
+					<p class="text-xs text-text-muted">Earlier messages may still quote the PDF. With excerpts removed, Conduit leaves those earlier messages out of future model requests.</p>
 					<button type="button" class="me-3 text-error underline" disabled={working} onclick={remove}>Confirm file deletion</button>
 					<button type="button" class="underline" onclick={() => (confirmDelete = false)}>Cancel</button>
 				{:else}
-					<button type="button" class="text-error underline" disabled={working} onclick={() => (confirmDelete = true)}>Delete original</button>
+					<button type="button" class="text-error underline" disabled={working} onclick={() => { removeExcerpts = true; confirmDelete = true; }}>Delete original</button>
 				{/if}
 			</section>
 		{:else if working}<p role="status">Opening PDF…</p>{/if}

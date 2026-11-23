@@ -4,6 +4,7 @@ import { handleChatFiles } from "./file-http.js";
 import { ChatError, type ChatService } from "./service.js";
 import type {
 	ChatAttachment,
+	ChatDocumentApproval,
 	ChatFileSelection,
 	ChatTurnRequest,
 } from "./types.js";
@@ -117,20 +118,11 @@ export async function handleChatApi(
 				prompt.length > 24_000
 			)
 				throw new ChatError(400, "Enter a message and choose PDF pages.");
-			const chat = await service.get(id);
-			const documents = await service.files.context(
-				id,
-				chat.temporary,
-				readFiles(body["files"]),
-				prompt,
+			respond(
+				res,
+				200,
+				await service.reviewDocuments(id, prompt, readFiles(body["files"])),
 			);
-			respond(res, 200, {
-				documents: documents.map(({ id, name, pages }) => ({
-					id,
-					name,
-					pages: pages.map(({ page }) => page),
-				})),
-			});
 			return;
 		}
 		if (id && operation === "/turns") {
@@ -278,6 +270,7 @@ function readTurn(body: Record<string, unknown>): ChatTurnRequest {
 					"text",
 					"attachments",
 					"files",
+					"documentApproval",
 					"searchId",
 					"editFrom",
 					"regenerate",
@@ -304,6 +297,9 @@ function readTurn(body: Record<string, unknown>): ChatTurnRequest {
 			attachments: readAttachments(body["attachments"]),
 		}),
 		...(body["files"] !== undefined && { files: readFiles(body["files"]) }),
+		...(body["documentApproval"] !== undefined && {
+			documentApproval: readApproval(body["documentApproval"]),
+		}),
 		...(typeof searchId === "string" && { searchId }),
 		...(typeof editFrom === "number" && { editFrom }),
 		...(regenerate === true && { regenerate }),
@@ -338,4 +334,58 @@ function readFiles(input: unknown): ChatFileSelection[] {
 		seen.add(id);
 		return { id, ...(Array.isArray(pages) && { pages: [...new Set(pages)] }) };
 	});
+}
+
+function readApproval(input: unknown): ChatDocumentApproval {
+	const invalid = () =>
+		new ChatError(400, "Choose valid excerpts from the PDF review.");
+	if (!input || typeof input !== "object" || Array.isArray(input))
+		throw invalid();
+	const { reviewId, documents } = input as {
+		reviewId?: unknown;
+		documents?: unknown;
+	};
+	if (
+		!isRequestId(reviewId) ||
+		!Array.isArray(documents) ||
+		documents.length < 1 ||
+		documents.length > 4
+	)
+		throw invalid();
+	const ids = new Set<string>();
+	const parsed = documents.map((document: unknown) => {
+		if (!document || typeof document !== "object") throw invalid();
+		const { id, pages } = document as { id?: unknown; pages?: unknown };
+		if (
+			!isRequestId(id) ||
+			ids.has(id) ||
+			!Array.isArray(pages) ||
+			pages.length < 1 ||
+			pages.length > 8
+		)
+			throw invalid();
+		ids.add(id);
+		const seen = new Set<number>();
+		return {
+			id,
+			pages: pages.map((item: unknown) => {
+				if (!item || typeof item !== "object") throw invalid();
+				const { page, excerpt } = item as { page?: unknown; excerpt?: unknown };
+				if (
+					typeof page !== "number" ||
+					!Number.isInteger(page) ||
+					page < 1 ||
+					page > 200 ||
+					seen.has(page) ||
+					typeof excerpt !== "string" ||
+					!excerpt.trim() ||
+					excerpt.length > 2400
+				)
+					throw invalid();
+				seen.add(page);
+				return { page, excerpt };
+			}),
+		};
+	});
+	return { reviewId, documents: parsed };
 }

@@ -395,3 +395,114 @@ test("Chat read-aloud selects an on-device voice and supports playback controls"
 		),
 	).toEqual(["Local: Ready to listen.", "pause", "resume", "cancel"]);
 });
+
+test("PDF excerpts can be redacted before the browser submits the approval", async ({
+	page,
+	relayUrl,
+}) => {
+	const id = crypto.randomUUID();
+	const fileId = crypto.randomUUID();
+	const reviewId = crypto.randomUUID();
+	const file = {
+		id: fileId,
+		name: "Receipt.pdf",
+		size: 1024,
+		pages: 1,
+		textPages: 1,
+		saved: false,
+		temporary: false,
+	};
+	const conversation = {
+		id,
+		title: "Receipt review",
+		updatedAt: Date.now(),
+		temporary: false,
+		messages: [],
+	};
+	const source = "Total $32. Account 123456789.";
+	let submitted: unknown;
+	await page.addInitScript(
+		({ id, file }) => {
+			localStorage.setItem(
+				`conduit.draft.v1:conversation:${id}:pdfs`,
+				JSON.stringify([{ file, pageInput: "" }]),
+			);
+		},
+		{ id, file },
+	);
+	await page.route(
+		(url) => url.pathname.startsWith("/api/chat"),
+		async (route) => {
+			const path = new URL(route.request().url()).pathname;
+			if (path === "/api/chat")
+				return route.fulfill({
+					json: {
+						enabled: true,
+						searchEnabled: false,
+						turnsEnabled: true,
+						filesEnabled: true,
+						conversations: [conversation],
+					},
+				});
+			if (path.endsWith("/file-review"))
+				return route.fulfill({
+					json: {
+						reviewId,
+						documents: [
+							{
+								id: fileId,
+								name: file.name,
+								pages: [{ page: 1, excerpt: source }],
+							},
+						],
+					},
+				});
+			if (path.endsWith("/turns")) {
+				submitted = route.request().postDataJSON();
+				return route.fulfill({
+					status: 202,
+					json: {
+						...conversation,
+						receipts: [route.request().postDataJSON().requestId],
+					},
+				});
+			}
+			return route.fulfill({ json: conversation });
+		},
+	);
+	await page.goto(new URL(`/chat?c=${id}`, relayUrl).href);
+	await page
+		.getByRole("textbox", { name: "Message", exact: true })
+		.fill("What is the total?");
+	await page.getByRole("button", { name: "Send with excerpts" }).click();
+	await expect(page.getByRole("alert")).toHaveText(
+		"Review the PDF excerpts before sending.",
+	);
+	expect(submitted).toBeUndefined();
+	await page.getByRole("button", { name: "Review PDF excerpts" }).click();
+	const excerpt = page.getByRole("textbox", { name: "Receipt.pdf · Page 1" });
+	await expect(excerpt).toHaveValue(source);
+	await excerpt.evaluate((element) => {
+		const textarea = element as HTMLTextAreaElement;
+		const start = textarea.value.indexOf("123456789");
+		textarea.setSelectionRange(start, start + 9);
+	});
+	await page.getByRole("button", { name: "Redact selection" }).click();
+	await expect(excerpt).toHaveValue("Total $32. Account [redacted].");
+	await page.getByRole("button", { name: "Send with excerpts" }).click();
+	await expect
+		.poll(() => submitted)
+		.toMatchObject({
+			text: "What is the total?",
+			documentApproval: {
+				reviewId,
+				documents: [
+					{
+						id: fileId,
+						pages: [{ page: 1, excerpt: "Total $32. Account [redacted]." }],
+					},
+				],
+			},
+		});
+	expect(JSON.stringify(submitted)).not.toContain("123456789");
+});

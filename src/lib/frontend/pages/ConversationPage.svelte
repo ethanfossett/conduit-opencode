@@ -4,7 +4,7 @@
 	import { type DraftPdf, pdfSelections } from "../utils/chat-file-drafts.js";
 	import ChatDictation from "../components/chat/ChatDictation.svelte";
 	import { createChatSpeech } from "../utils/chat-speech.svelte.js";
-	import type { ChatAttachment, ChatDocumentCitation, ChatConversation, ChatSearchResult, ChatSummary, ChatTurnRequest } from "../../chat/types.js";
+	import type { ChatAttachment, ChatDocumentCitation, ChatDocumentReview, ChatConversation, ChatSearchResult, ChatSummary, ChatTurnRequest } from "../../chat/types.js";
 	import { clearAcceptedDraft, draftKey, loadDraft, saveDraft } from "../utils/drafts.js";
 	import { renderMarkdown } from "../utils/markdown.js";
 	import { stageChatHandoff } from "../stores/chat-handoff.svelte.js";
@@ -48,7 +48,7 @@
 	let filesOpen = $state(false);
 	let filesBusy = $state(false);
 	let pdfPreview = $state<ChatDocumentCitation>();
-	let reviewedPages = $state<{ id: string; name: string; pages: number[] }[]>([]);
+	let pdfReview = $state<ChatDocumentReview | null>(null);
 	let enabled = $state(false);
 	let handoffText = $state("");
 	let handoffProject = $state("");
@@ -171,7 +171,7 @@
 
 	function setPdfDraft(value: DraftPdf[]) {
 		pdfDraft = value;
-		reviewedPages = [];
+		pdfReview = null;
 		if (chat && !chat.temporary && editFrom === null) {
 			saveDraft(pdfKey(chat.id), value.length ? JSON.stringify(value) : "");
 		}
@@ -184,12 +184,35 @@
 
 	function reviewPdfs() {
 		const id = chat?.id;
-		if (!id) return;
+		if (!id || !text.trim()) return;
 		void run(async () => {
-			reviewedPages = (await api<{documents: typeof reviewedPages}>(
+			pdfReview = await api<ChatDocumentReview>(
 				`/${id}/file-review`, "POST", { prompt: text, files: pdfSelections(pdfDraft) },
-			)).documents;
+			);
 		});
+	}
+
+	function removeReviewedPage(id: string, page: number) {
+		if (!pdfReview) return;
+		pdfReview.documents = pdfReview.documents
+			.map((document) => document.id === id
+				? { ...document, pages: document.pages.filter((excerpt) => excerpt.page !== page) }
+				: document)
+			.filter((document) => document.pages.length);
+	}
+
+	function redactSelection(id: string, page: number) {
+		const excerpt = pdfReview?.documents.find((item) => item.id === id)
+			?.pages.find((item) => item.page === page);
+		const editor = document.getElementById(`pdf-excerpt-${id}-${page}`);
+		if (!excerpt || !(editor instanceof HTMLTextAreaElement)) return;
+		const { selectionStart, selectionEnd } = editor;
+		if (selectionStart === selectionEnd) {
+			error = "Select the text you want to redact first.";
+			return;
+		}
+		error = "";
+		excerpt.excerpt = `${excerpt.excerpt.slice(0, selectionStart)}[redacted]${excerpt.excerpt.slice(selectionEnd)}`;
 	}
 
 	function pendingKey(id: string) {
@@ -265,7 +288,7 @@
 		editFrom = null;
 		previousDraft = null;
 		pdfDraft = readPdfDraft(conversation);
-		reviewedPages = [];
+		pdfReview = null;
 		filesOpen = false;
 		pdfPreview = undefined;
 		offline = false;
@@ -421,7 +444,7 @@
 		editFrom = index;
 		text = message.text;
 		pdfDraft = [];
-		reviewedPages = [];
+		pdfReview = null;
 		resetSearch();
 		attachments = [];
 		document.getElementById("chat-message")?.focus();
@@ -431,7 +454,7 @@
 		if (editFrom === null || !previousDraft) return;
 		editFrom = null;
 		({ text, attachments, pdfs: pdfDraft, showSearch, searchQuery, searchResult, includeSources } = previousDraft);
-		reviewedPages = [];
+		pdfReview = null;
 		previousDraft = null;
 	}
 
@@ -486,7 +509,7 @@
 		const updated = `${text}${separator}${transcript}`;
 		if (updated.length > 24_000) return false;
 		text = updated;
-		reviewedPages = [];
+		pdfReview = null;
 		if (storageKey && editFrom === null) saveDraft(storageKey, text);
 		return true;
 	}
@@ -496,15 +519,24 @@
 		const conversation = chat;
 		const prompt = text.trim();
 		if (!conversation || !prompt || busy || sending || showHandoff || dictationActive || filesBusy) return;
-		let pdfs: ReturnType<typeof pdfSelections>;
-		try {
-			pdfs = reviewedPages.length ? reviewedPages.map(({ id, pages }) => ({ id, pages })) : pdfSelections(pdfDraft);
-		} catch (err) {
-			error = err instanceof Error ? err.message : "Check the selected PDF pages.";
-			return;
+		let documentApproval: ChatTurnRequest["documentApproval"];
+		if (pdfDraft.length) {
+			if (!pdfReview) {
+				error = "Review the PDF excerpts before sending.";
+				return;
+			}
+			const documents = pdfReview.documents.map(({ id, pages }) => ({
+				id,
+				pages: pages.filter(({ excerpt }) => excerpt.trim()).map(({ page, excerpt }) => ({ page, excerpt })),
+			})).filter(({ pages }) => pages.length);
+			if (!documents.length) {
+				error = "Keep an excerpt in the review or detach the PDFs before sending.";
+				return;
+			}
+			documentApproval = { reviewId: pdfReview.reviewId, documents };
 		}
 		const submission = {
-			...(pdfs.length && { files: pdfs }),
+			...(documentApproval && { documentApproval }),
 			text: prompt,
 			...(attachments.length ? { attachments } : {}),
 			...(includeSources && searchResult && { searchId: searchResult.id }),
@@ -661,7 +693,7 @@
 											{/if}
 										{/if}
 										{#if turnsEnabled && message.role === "assistant"}
-											{#if index === visibleMessages.length - 1}
+											{#if index === visibleMessages.length - 1 && lastPrompt >= (chat.contextStart ?? 0)}
 												<button type="button" class="underline" disabled={busy || sending || editFrom !== null || dictationActive} onclick={() => runTurn({ regenerate: true })}>Regenerate</button>
 											{/if}
 											{#if !chat.temporary}
@@ -748,11 +780,11 @@
 					{/if}
 					<form class="mx-auto w-full max-w-2xl space-y-2 p-4" onsubmit={send}>
 						{#if editFrom !== null}
-							<p class="flex justify-between text-xs text-text-muted">Editing the latest prompt <button type="button" class="underline" disabled={dictationActive} onclick={endEdit}>Cancel edit</button></p>
+							<p class="flex justify-between text-xs text-text-muted">Editing the latest prompt{#if chat.messages[editFrom]?.documents?.length} · Add and review a PDF to include it again{/if} <button type="button" class="underline" disabled={dictationActive} onclick={endEdit}>Cancel edit</button></p>
 						{/if}
 						<label class="sr-only" for="chat-message">Message</label>
 						<textarea id="chat-message" placeholder="Message Cyber v1" maxlength="24000" rows="3" disabled={busy || sending} bind:value={text} oninput={(event) => {
-							reviewedPages = [];
+							pdfReview = null;
 							if (storageKey && editFrom === null) saveDraft(storageKey, event.currentTarget.value);
 						}} class="w-full resize-y rounded-xl border border-border bg-bg-surface p-3 text-base"></textarea>
 						{#if attachments.length}
@@ -776,9 +808,32 @@
 											setPdfDraft(pdfDraft.filter((entry) => entry.file.id !== item.file.id))}>Detach</button>
 									</div>
 								{/each}
-								<button type="button" class="underline" disabled={busy || sending} onclick={reviewPdfs}>Review pages sent to NodeCode</button>
-								{#each reviewedPages as doc}<p>{doc.name} · pages {doc.pages.join(", ")}</p>{/each}
+								<button type="button" class="underline" disabled={busy || sending || !text.trim()} onclick={reviewPdfs}>Review PDF excerpts</button>
 							</div>
+						{/if}
+						{#if pdfReview}
+							<section class="max-h-[32dvh] space-y-3 overflow-auto rounded border border-border bg-bg-surface p-3 text-sm" aria-label="PDF excerpts for NodeCode">
+								<div class="flex justify-between gap-3">
+									<h2 class="font-medium">PDF excerpts for NodeCode</h2>
+									<button type="button" class="underline" disabled={busy || sending} onclick={() => (pdfReview = null)}>Close review</button>
+								</div>
+								<p class="text-xs text-text-muted">Sending includes the text shown below and its page numbers. Trim an excerpt or select text and tap Redact selection.</p>
+								{#each pdfReview.documents as file (file.id)}
+									{#each file.pages as excerpt (excerpt.page)}
+										<div class="space-y-1 border-t border-border pt-2">
+											<label for={`pdf-excerpt-${file.id}-${excerpt.page}`} class="block font-medium">{file.name} · Page {excerpt.page}</label>
+											<textarea id={`pdf-excerpt-${file.id}-${excerpt.page}`} rows="4" maxlength="2400" spellcheck={false} autocomplete="off" autocapitalize="off" disabled={busy || sending}
+												bind:value={excerpt.excerpt} class="w-full rounded border border-border bg-bg p-2 text-base"></textarea>
+											<div class="flex flex-wrap gap-3 text-xs">
+												<button type="button" class="underline" disabled={busy || sending} onclick={() => redactSelection(file.id, excerpt.page)}>Redact selection</button>
+												<button type="button" class="underline" disabled={busy || sending} onclick={() => removeReviewedPage(file.id, excerpt.page)}>Remove page</button>
+											</div>
+										</div>
+									{/each}
+								{:else}
+									<p>All pages were removed. Review again or detach the PDFs.</p>
+								{/each}
+							</section>
 						{/if}
 						<div class="flex flex-wrap items-center justify-between gap-2 text-sm">
 							{#if filesEnabled}
@@ -797,7 +852,7 @@
 									else showSearch = true;
 								}}>Web search</button>
 							{/if}
-							<button type="submit" disabled={busy || sending || showHandoff || dictationActive || filesBusy || !text.trim()} class="rounded-lg bg-accent px-4 py-2 text-bg disabled:opacity-50">{editFrom === null ? "Send" : "Send edit"}</button>
+							<button type="submit" disabled={busy || sending || showHandoff || dictationActive || filesBusy || !text.trim()} class="rounded-lg bg-accent px-4 py-2 text-bg disabled:opacity-50">{pdfDraft.length ? "Send with excerpts" : editFrom === null ? "Send" : "Send edit"}</button>
 						</div>
 						<p class="text-xs text-text-muted">{pdfDraft.length ? "PDFs are stored on Conduit. Sending includes text excerpts from the selected pages." : "NodeCode receives the message, recent context, and any text you attach."}</p>
 					</form>
@@ -817,5 +872,6 @@
 
 {#if filesOpen}
 	<ChatFilesPanel chatId={chat?.id} temporary={chat?.temporary ?? false} selected={pdfDraft} initialPage={pdfPreview}
-		onChange={setPdfDraft} onClose={() => (filesOpen = false)} onBusy={(active) => (filesBusy = active)} />
+		onChange={setPdfDraft} onClose={() => (filesOpen = false)} onBusy={(active) => (filesBusy = active)}
+		onDeleted={() => { if (chat) void reconcile(chat.id); }} />
 {/if}

@@ -85,3 +85,134 @@ it("keeps temporary uploads out of disk and expires their originals with the cha
 	files.dropTemporary("temporary-owner");
 	await expect(files.details(file.id)).rejects.toMatchObject({ status: 404 });
 });
+
+it("requires exact reviewed excerpts and scrubs stored copies from conversations and branches", async () => {
+	const { ChatService } = await import("../../../src/lib/chat/service.js");
+	const { handleChatApi } = await import("../../../src/lib/chat/http.js");
+	const { createServer } = await import("node:http");
+	const generate = vi.fn(
+		async (_prompt: string) => "The fee is 321 dollars. [D1:p2]",
+	);
+	const chat = new ChatService(directory, generate);
+	const app = createServer((req, res) => {
+		const url = new URL(req.url ?? "/", "http://localhost");
+		void handleChatApi(chat, url.pathname, req, res);
+	});
+	await new Promise<void>((resolve) => app.listen(0, "127.0.0.1", resolve));
+	const address = app.address();
+	if (!address || typeof address === "string")
+		throw new Error("Missing test relay.");
+	const base = `http://127.0.0.1:${address.port}/api/chat`;
+	const request = (path: string, method: string, data?: unknown) =>
+		fetch(base + path, {
+			method,
+			headers: { "Content-Type": "application/json", "X-Conduit-Chat": "1" },
+			...(data !== undefined && { body: JSON.stringify(data) }),
+		});
+
+	try {
+		const owner = await chat.create(false);
+		const other = await chat.create(false);
+		const file = await chat.uploadFile(
+			owner.id,
+			"Private-identity.pdf",
+			Buffer.from("fixture"),
+		);
+		const selections = [{ id: file.id, pages: [2] }];
+		const turn = {
+			requestId: "a0000000-0000-4000-8000-000000000001",
+			text: "What is the fee?",
+		};
+		const turnPath = `/${owner.id}/turns`;
+		expect(
+			(await request(turnPath, "POST", { ...turn, files: selections })).status,
+		).toBe(409);
+		const preview = await request(`/${owner.id}/file-review`, "POST", {
+			prompt: turn.text,
+			files: selections,
+		});
+		expect(preview.headers.get("Cache-Control")).toBe("no-store");
+		const review = await preview.json();
+		expect(review.documents[0]?.pages).toEqual([
+			{ page: 2, excerpt: "The quarterly renewal fee is 321 dollars." },
+		]);
+		const approval = {
+			reviewId: review.reviewId,
+			documents: [
+				{
+					id: file.id,
+					pages: [{ page: 2, excerpt: "The [redacted] fee is 321 dollars." }],
+				},
+			],
+		};
+		expect(
+			(
+				await request(`/${other.id}/turns`, "POST", {
+					...turn,
+					documentApproval: approval,
+				})
+			).status,
+		).toBe(409);
+		expect(
+			(
+				await request(turnPath, "POST", {
+					...turn,
+					text: "Changed prompt",
+					documentApproval: approval,
+				})
+			).status,
+		).toBe(409);
+		expect(
+			(
+				await request(turnPath, "POST", {
+					...turn,
+					documentApproval: {
+						...approval,
+						documents: [
+							{ id: file.id, pages: [{ page: 2, excerpt: "999 dollars" }] },
+						],
+					},
+				})
+			).status,
+		).toBe(400);
+		expect(generate).not.toHaveBeenCalled();
+
+		expect(
+			(await request(turnPath, "POST", { ...turn, documentApproval: approval }))
+				.status,
+		).toBe(202);
+		await vi.waitFor(async () =>
+			expect((await chat.get(owner.id)).turn).toBeUndefined(),
+		);
+		const providerInput = generate.mock.calls[0]?.[0];
+		expect(providerInput).toContain("The [redacted] fee is 321 dollars.");
+		expect(providerInput).not.toContain("quarterly renewal");
+		expect(providerInput).not.toContain(file.name);
+		expect(providerInput).not.toContain(file.id);
+		expect((await chat.get(owner.id)).messages[1]?.fileCitations).toMatchObject(
+			[{ id: file.id, page: 2 }],
+		);
+
+		const branch = await chat.create(false, { id: owner.id, through: 2 });
+		const deleted = await request(
+			`/files/${file.id}?removeExcerpts=1`,
+			"DELETE",
+		);
+		expect(deleted.status).toBe(200);
+		await expect(chat.files.details(file.id)).rejects.toMatchObject({
+			status: 404,
+		});
+		for (const id of [owner.id, branch.id]) {
+			const saved = await chat.get(id);
+			expect(saved.messages[0]?.documents).toBeUndefined();
+			expect(saved.messages[1]?.fileCitations).toBeUndefined();
+			expect(saved.messages[1]?.text).toContain("321 dollars");
+			expect(saved.contextStart).toBe(2);
+		}
+		await chat.send(owner.id, "A fresh question");
+		expect(generate.mock.calls[1]?.[0]).not.toContain("321 dollars");
+	} finally {
+		app.closeAllConnections();
+		await new Promise<void>((resolve) => app.close(() => resolve()));
+	}
+});

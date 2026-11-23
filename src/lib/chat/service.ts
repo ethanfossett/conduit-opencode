@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { OpenCodeClient } from "../instance/opencode-client.js";
 import { nodecodeModel } from "../nodecode.js";
 
+import { DocumentReviews } from "./document-review.js";
 import { ChatError } from "./errors.js";
 import { ChatFiles, documentCitations } from "./files.js";
 import { streamNodeCode } from "./nodecode-stream.js";
@@ -18,6 +19,7 @@ import { type ChatSearch, createConfiguredSearch } from "./search.js";
 import type {
 	ChatAttachment,
 	ChatConversation,
+	ChatFileSelection,
 	ChatMessage,
 	ChatSummary,
 	ChatTurn,
@@ -48,6 +50,8 @@ export class ChatService {
 		}
 	>();
 	private creating = false;
+	private deletingFile = false;
+	private readonly documentReviews = new DocumentReviews();
 	private searchesInProgress = 0;
 
 	readonly files: ChatFiles;
@@ -62,6 +66,11 @@ export class ChatService {
 		private readonly searchWorker?: ChatSearch,
 	) {
 		this.files = new ChatFiles(join(directory, "files"));
+	}
+
+	private checkFileDeletion() {
+		if (this.deletingFile)
+			throw new ChatError(409, "A PDF is being deleted. Try again shortly.");
 	}
 
 	get searchEnabled() {
@@ -153,6 +162,7 @@ export class ChatService {
 		temporary: boolean,
 		branch?: { id: string; through: number },
 	): Promise<ChatConversation> {
+		this.checkFileDeletion();
 		if (this.creating)
 			throw new ChatError(409, "Another conversation is being created.");
 		this.creating = true;
@@ -190,6 +200,9 @@ export class ChatService {
 				updatedAt: Date.now(),
 				temporary,
 				messages: source ? source.messages.slice(0, through) : [],
+				...(source?.contextStart && {
+					contextStart: Math.min(through, source.contextStart),
+				}),
 			};
 			await this.save(chat);
 			return chat;
@@ -224,6 +237,7 @@ export class ChatService {
 	}
 
 	async remove(id: string): Promise<void> {
+		this.checkFileDeletion();
 		if (this.pending.has(id))
 			throw new ChatError(409, "Wait for the reply before deleting this chat.");
 		this.expireTemporary();
@@ -233,6 +247,7 @@ export class ChatService {
 			if (chat.temporary) this.removeTemporary(id);
 			else await rm(this.path(id), { force: true });
 			this.searchWorker?.clear(id);
+			this.documentReviews.clear(id);
 		} finally {
 			this.pending.delete(id);
 			this.expireTemporary();
@@ -240,6 +255,7 @@ export class ChatService {
 	}
 
 	async uploadFile(id: string, name: string, bytes: Buffer) {
+		this.checkFileDeletion();
 		if (this.pending.has(id))
 			throw new ChatError(409, "Wait for the active request.");
 		this.expireTemporary();
@@ -252,6 +268,64 @@ export class ChatService {
 		} finally {
 			this.pending.delete(id);
 			this.expireTemporary();
+		}
+	}
+
+	async reviewDocuments(
+		id: string,
+		prompt: string,
+		selections: ChatFileSelection[],
+	) {
+		this.checkFileDeletion();
+		const chat = await this.get(id);
+		const documents = await this.files.context(
+			id,
+			chat.temporary,
+			selections,
+			prompt,
+		);
+		this.checkFileDeletion();
+		if (chat.temporary && !this.temporary.has(id))
+			throw new ChatError(404, "Conversation not found.");
+		if ((await this.files.retained(documents)).length !== documents.length)
+			throw new ChatError(409, "A PDF changed. Choose the files again.");
+		this.checkFileDeletion();
+		return this.documentReviews.create(id, prompt, documents);
+	}
+
+	async deleteFile(id: string, scrub: boolean) {
+		this.checkFileDeletion();
+		if (this.pending.size || this.creating)
+			throw new ChatError(
+				409,
+				"Wait for active chat requests before deleting this PDF.",
+			);
+		this.deletingFile = true;
+		try {
+			await this.files.details(id);
+			this.documentReviews.forgetFile(id);
+			if (scrub) {
+				for (const { id: chatId } of await this.fileUses(id)) {
+					const chat = await this.get(chatId);
+					const messages = chat.messages.map((message) =>
+						withoutFile(message, id),
+					);
+					const turn =
+						chat.turn && !usesFile(chat.turn.prompt, id)
+							? chat.turn
+							: undefined;
+					const { turn: _turn, ...rest } = chat;
+					await this.save({
+						...rest,
+						messages,
+						contextStart: messages.length,
+						...(turn && { turn }),
+					});
+				}
+			}
+			await this.files.remove(id);
+		} finally {
+			this.deletingFile = false;
 		}
 	}
 
@@ -271,11 +345,7 @@ export class ChatService {
 			const messages = chat.turn
 				? [...chat.messages, chat.turn.prompt]
 				: chat.messages;
-			if (
-				messages.some((message) =>
-					message.documents?.some((document) => document.id === id),
-				)
-			)
+			if (messages.some((message) => usesFile(message, id)))
 				uses.push({ id: chat.id, title: chat.title });
 		}
 		return uses;
@@ -285,6 +355,7 @@ export class ChatService {
 		id: string,
 		changes: { title?: string; pinned?: boolean; archived?: boolean },
 	) {
+		this.checkFileDeletion();
 		if (this.pending.has(id))
 			throw new ChatError(409, "Wait for the active request.");
 		this.pending.add(id);
@@ -312,6 +383,7 @@ export class ChatService {
 		id: string,
 		request: ChatTurnRequest,
 	): Promise<ChatConversation> {
+		this.checkFileDeletion();
 		this.expireTemporary();
 		if (this.pending.has(id)) {
 			const current = this.active.get(id)?.chat;
@@ -338,6 +410,7 @@ export class ChatService {
 				),
 			};
 			await this.save(accepted);
+			if (request.documentApproval) this.documentReviews.clear(id);
 			if (request.searchId) this.searchWorker?.clear(id);
 			const controller = new AbortController();
 			const done = this.finishTurn(accepted, turn, controller.signal);
@@ -359,15 +432,7 @@ export class ChatService {
 			const previous = chat.turn;
 			if (!previous || previous.status === "running")
 				throw new ChatError(409, "There is no interrupted reply to retry.");
-			if (
-				previous.prompt.documents?.length &&
-				(await this.files.retained(previous.prompt.documents)).length !==
-					previous.prompt.documents.length
-			)
-				throw new ChatError(
-					409,
-					"This turn used a deleted PDF. Send another message with the files you want to use.",
-				);
+			await this.checkPreviouslyReviewed(previous.prompt);
 			return {
 				id: request.requestId,
 				status: "running",
@@ -388,6 +453,11 @@ export class ChatService {
 				"Only the latest prompt can be edited or regenerated.",
 			);
 		}
+		if (request.regenerate && lastUser < (chat.contextStart ?? 0))
+			throw new ChatError(
+				409,
+				"Send a new message after removing earlier model context.",
+			);
 		const previous =
 			replaceFrom === undefined ? undefined : chat.messages[replaceFrom];
 		const text = (request.regenerate ? previous?.text : request.text)?.trim();
@@ -407,30 +477,34 @@ export class ChatService {
 				409,
 				"These search results expired. Search again or remove them.",
 			);
-		const documents =
-			request.files === undefined
+		if (request.files?.length)
+			throw new ChatError(409, "Review the PDF excerpts before sending.");
+		if (request.regenerate && previous)
+			await this.checkPreviouslyReviewed(previous);
+		const documents = request.documentApproval
+			? this.documentReviews.approve(chat.id, text, request.documentApproval)
+			: request.regenerate
 				? previous?.documents
-				: await this.files.context(
-						chat.id,
-						chat.temporary,
-						request.files,
-						text,
-					);
-
+				: undefined;
 		if (
-			request.files === undefined &&
 			documents?.length &&
 			(await this.files.retained(documents)).length !== documents.length
 		)
 			throw new ChatError(
 				409,
-				"This turn used a deleted PDF. Send another message with the files you want to use.",
+				"A reviewed PDF is no longer available. Review the files again.",
 			);
+		const {
+			documents: _oldDocuments,
+			documentsReviewed: _reviewed,
+			...prior
+		} = previous ?? {};
+
 		const prompt: ChatMessage = {
-			...previous,
+			...prior,
 			role: "user",
 			text,
-			...(documents !== undefined && { documents }),
+			...(documents?.length && { documents, documentsReviewed: true }),
 			...(request.attachments?.length && { attachments: request.attachments }),
 			...(search && {
 				sourceContext: { query: search.query, sources: search.sources },
@@ -442,6 +516,20 @@ export class ChatService {
 			prompt,
 			...(replaceFrom !== undefined && { replaceFrom }),
 		};
+	}
+
+	private async checkPreviouslyReviewed(message: ChatMessage) {
+		if (!message.documents?.length) return;
+		if (
+			!message.documentsReviewed ||
+			(await this.files.retained(message.documents)).length !==
+				message.documents.length
+		) {
+			throw new ChatError(
+				409,
+				"Review the PDF again in a new message before sending it.",
+			);
+		}
 	}
 
 	private async finishTurn(
@@ -456,15 +544,35 @@ export class ChatService {
 		let updated: ChatConversation = chat;
 		try {
 			const recent = history
-				.slice(-20)
+				.slice(Math.max(chat.contextStart ?? 0, history.length - 20))
 				.map(
-					({ documents: _documents, fileCitations: _citations, ...message }) =>
-						message,
+					({
+						documents: _documents,
+						documentsReviewed: _reviewed,
+						fileCitations: _citations,
+						...message
+					}) => message,
 				);
-			const context = [...recent, turn.prompt];
+			const {
+				documents: _documents,
+				documentsReviewed: _reviewed,
+				...modelPrompt
+			} = turn.prompt;
+			const documents = turn.prompt.documents ?? [];
+			const context = [
+				...recent,
+				{
+					...modelPrompt,
+					...(documents.length && {
+						documents: documents.map(({ pages }, i) => ({
+							label: `D${i + 1}`,
+							pages,
+						})),
+					}),
+				},
+			];
 			while (JSON.stringify(context).length > 100_000 && context.length > 1)
 				context.splice(0, 2);
-			const documents = turn.prompt.documents ?? [];
 			const instructions = documents.length
 				? " Cite supplied document excerpts using [D1:p3] for document 1 page 3. Document numbers start at 1 in the order of the latest message. Use only supplied page numbers. State when the supplied excerpts are insufficient."
 				: "";
@@ -488,6 +596,9 @@ export class ChatService {
 			updated = {
 				...rest,
 				updatedAt: Date.now(),
+				...(chat.contextStart !== undefined && {
+					contextStart: Math.min(chat.contextStart, history.length),
+				}),
 				messages: [
 					...history,
 					turn.prompt,
@@ -569,6 +680,7 @@ export class ChatService {
 		const stored = this.temporary.get(id);
 		if (stored) clearTimeout(stored.timer);
 		this.temporary.delete(id);
+		this.documentReviews.clear(id);
 		this.searchWorker?.clear(id);
 		this.files.dropTemporary(id);
 	}
@@ -597,6 +709,25 @@ export class ChatService {
 			await rm(staging, { force: true });
 		}
 	}
+}
+
+function usesFile(message: ChatMessage, id: string) {
+	return (
+		message.documents?.some((document) => document.id === id) ||
+		message.fileCitations?.some((citation) => citation.id === id)
+	);
+}
+
+function withoutFile(message: ChatMessage, id: string): ChatMessage {
+	if (!usesFile(message, id)) return message;
+	const { documents, fileCitations, ...rest } = message;
+	const keptDocuments = documents?.filter((document) => document.id !== id);
+	const keptCitations = fileCitations?.filter((citation) => citation.id !== id);
+	return {
+		...rest,
+		...(keptDocuments?.length && { documents: keptDocuments }),
+		...(keptCitations?.length && { fileCitations: keptCitations }),
+	};
 }
 
 export function createConfiguredChat(

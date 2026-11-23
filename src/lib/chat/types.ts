@@ -8,6 +8,7 @@ export interface ChatMessage {
 	text: string;
 	attachments?: ChatAttachment[];
 	documents?: ChatDocumentContext[];
+	documentsReviewed?: boolean;
 	fileCitations?: ChatDocumentCitation[];
 	sourceContext?: Pick<ChatSearchResult, "query" | "sources">;
 }
@@ -23,6 +24,7 @@ export interface ChatConversation {
 	renamed?: boolean;
 	turn?: ChatTurn;
 	receipts?: string[];
+	contextStart?: number;
 }
 
 export interface ChatSource {
@@ -52,6 +54,7 @@ export interface ChatTurnRequest {
 	text?: string;
 	attachments?: ChatAttachment[];
 	files?: ChatFileSelection[];
+	documentApproval?: ChatDocumentApproval;
 	searchId?: string;
 	editFrom?: number;
 	regenerate?: boolean;
@@ -90,4 +93,17 @@ export interface ChatDocumentCitation {
 	name: string;
 	page: number;
 	excerpt: string;
+}
+
+export interface ChatDocumentApproval {
+	reviewId: string;
+	documents: {
+		id: string;
+		pages: { page: number; excerpt: string }[];
+	}[];
+}
+
+export interface ChatDocumentReview {
+	reviewId: string;
+	documents: ChatDocumentContext[];
 }

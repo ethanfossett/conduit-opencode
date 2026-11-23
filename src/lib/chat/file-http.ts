@@ -77,7 +77,10 @@ export async function handleChatFiles(
 		return true;
 	}
 	if (id && !operation && req.method === "DELETE") {
-		await service.files.remove(id);
+		await service.deleteFile(
+			id,
+			url.searchParams.get("removeExcerpts") === "1",
+		);
 		respond(res, 200, { deleted: true });
 		return true;
 	}
