@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
+import type { CompletionMessage } from "../../../src/lib/chat/nodecode-stream.js";
 import { ChatService } from "../../../src/lib/chat/service.js";
 import type { ChatReasoning } from "../../../src/lib/chat/types.js";
 
@@ -15,6 +16,7 @@ it("uses the selected model per turn and preserves only the played reply on an i
 			onText: (text: string) => void,
 			_reasoning?: ChatReasoning,
 			model?: string,
+			_structured?: CompletionMessage[],
 		) => {
 			const answer = "I heard you. This part never played.";
 			onText(answer);
@@ -71,6 +73,10 @@ it("uses the selected model per turn and preserves only the played reply on an i
 		);
 		expect(generate.mock.lastCall?.[4]).toBe("local");
 		expect(generate.mock.lastCall?.[0]).toContain("I heard you.");
+		expect(generate.mock.lastCall?.[5]?.at(-1)).toEqual({
+			role: "user",
+			content: "What did you hear?",
+		});
 		expect(generate.mock.lastCall?.[0]).not.toContain("never played");
 		const late = await service.interruptVoice(id, second, 0);
 		expect(late.messages.at(-1)).toMatchObject({

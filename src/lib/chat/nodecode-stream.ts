@@ -4,6 +4,11 @@ import type { ChatReasoning } from "./types.js";
 
 const MAX_REPLY = 64_000;
 
+export interface CompletionMessage {
+	role: "system" | "user" | "assistant";
+	content: string;
+}
+
 export async function streamNodeCode(
 	key: string,
 	prompt: string,
@@ -13,6 +18,7 @@ export async function streamNodeCode(
 	model = NODECODE_MODEL_ID,
 	endpoint = "https://api.nodecode.ai/v1/chat/completions",
 	outputLimit?: number,
+	structured?: CompletionMessage[],
 ): Promise<string> {
 	const response = await fetch(endpoint, {
 		method: "POST",
@@ -26,7 +32,8 @@ export async function streamNodeCode(
 			stream: true,
 			...(outputLimit && { max_tokens: outputLimit }),
 			...(reasoning && { reasoning_effort: reasoning }),
-			messages: [{ role: "user", content: prompt }],
+			messages: structured ?? [{ role: "user", content: prompt }],
+			...(structured && { temperature: 0.35 }),
 		}),
 		redirect: "error",
 		signal: AbortSignal.any([signal, AbortSignal.timeout(120_000)]),
