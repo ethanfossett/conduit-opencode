@@ -45,6 +45,8 @@ self.addEventListener("fetch", (event: FetchEvent) => {
 		!(
 			url.pathname === "/" ||
 			url.pathname === "/auth" ||
+			url.pathname === "/chat" ||
+			url.pathname === "/chat/" ||
 			url.pathname === "/setup" ||
 			/^\/p\/[^/]+(?:\/s\/[^/]+)?\/?$/.test(url.pathname)
 		)

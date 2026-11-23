@@ -10,6 +10,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { AuthManager } from "../auth.js";
+import { type ChatService, createConfiguredChat } from "../chat/service.js";
 import {
 	ensureCerts,
 	getAllIPs,
@@ -626,7 +627,18 @@ export class Daemon {
 		);
 
 		// Create HTTP request router
+		let chat: ChatService | undefined;
+		try {
+			chat = createConfiguredChat(join(this.configDir, "chat"), () =>
+				this.instanceManager.getInstances().map((instance) => instance.port),
+			);
+		} catch {
+			this.log.warn(
+				"Chat configuration rejected. Use a dedicated OpenCode loopback port.",
+			);
+		}
 		this.router = new RequestRouter({
+			...(chat && { chat }),
 			auth: this.auth,
 			staticDir: this.staticDir,
 			getProjects: () => {

@@ -8,6 +8,7 @@
 	import { getCurrentRoute } from "./stores/router.svelte.js";
 	import ChatLayout from "./components/layout/ChatLayout.svelte";
 	import PinPage from "./pages/PinPage.svelte";
+	import ConversationPage from "./pages/ConversationPage.svelte";
 	import DashboardPage from "./pages/DashboardPage.svelte";
 	import SetupPage from "./pages/SetupPage.svelte";
 	import ConfirmModal from "./components/overlays/ConfirmModal.svelte";
@@ -18,6 +19,8 @@
 <svelte:boundary onerror={recordDisplayError}>
 {#if route.page === "chat"}
 	<ChatLayout />
+{:else if route.page === "conversation"}
+	<ConversationPage />
 {:else if route.page === "dashboard"}
 	<DashboardPage />
 {:else if route.page === "auth"}

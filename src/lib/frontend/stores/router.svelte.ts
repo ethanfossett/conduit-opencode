@@ -8,6 +8,7 @@ export type Route =
 	| { page: "auth" }
 	| { page: "setup" }
 	| { page: "dashboard" }
+	| { page: "conversation" }
 	| { page: "chat"; slug: string; sessionId?: string };
 
 export interface RouteTransition {
@@ -106,6 +107,7 @@ export function getCurrentRoute(): Route {
 	if (path === "/auth" || path === "/auth/") {
 		return { page: "auth" };
 	}
+	if (path === "/chat" || path === "/chat/") return { page: "conversation" };
 	if (path === "/setup" || path === "/setup/") {
 		return { page: "setup" };
 	}

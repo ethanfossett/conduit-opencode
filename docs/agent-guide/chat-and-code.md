@@ -35,3 +35,17 @@ Run `pnpm check`, `pnpm lint`, `pnpm test:unit`, and `pnpm build` from this chec
 - Live loopback preview against OpenCode 2.3.2. The NodeCode card found an existing connection and the short inference test succeeded.
 - A mobile-sized Chromium session created a new Cyber v1 chat, received a real streamed response, and restored the conversation after reload. Physical iPhone acceptance is still outstanding.
 - The current branch passed 4,247 unit tests and both targeted desktop and mobile browser tests, plus type checking, lint and a production build.
+
+## Running the projectless Chat preview
+
+The **Chat** link opens `/chat`. Conversations have their own authenticated HTTP routes and inbox. A dedicated OpenCode 2.x runtime performs a single stateless, tool-free text generation per turn. It uses the NodeCode Cyber v1 model and receives the recent transcript plus any explicitly attached plain text. OpenCode currently returns a complete reply from this tool-free endpoint. Code sessions continue to use their existing streaming path.
+
+1. On Linux, install Bubblewrap and use the OpenCode 2.x binary already available to the relay. Give the Chat runtime its own server password. Store the password and the regular NodeCode key in a protected environment file outside the checkout.
+2. Run `deploy/chat/run-opencode.sh` with `NODECODE_API_KEY` and `CONDUIT_CHAT_OPENCODE_PASSWORD` loaded into its environment. By default, the launcher binds port 4097, starts in an empty workspace, mounts a fresh home in memory, and passes only its dedicated provider and server credentials. Pin the OpenCode binary with `CONDUIT_CHAT_OPENCODE_BINARY` if needed.
+3. Set `CONDUIT_CHAT_OPENCODE_URL=http://127.0.0.1:4097` and the matching `CONDUIT_CHAT_OPENCODE_PASSWORD` in the Conduit process environment, then start the relay. Keep the Chat runtime's port out of the Code registry, public proxy, and Tailscale Serve configuration.
+
+The sandbox shares the host network for provider HTTPS and relay loopback. It mounts system executables and certificate/DNS configuration, with no host home or project mounts. Keep Code's local server authenticated with separate credentials. The relay accepts no project, command, permission, or tool fields on Chat routes and refuses generation if a Code instance claims the configured Chat port.
+
+Ordinary conversations persist under the relay's `chat/` state directory and their unsent text drafts persist in the browser. Temporary chats stay in relay memory until restart, explicit deletion, or expiration after an hour without a completed turn. They have no inbox entry, shareable URL, or stored draft. The hosted model still sees temporary prompts. Neither mode stores unsent attachments in the browser across reloads.
+
+The HTTP boundary regression is in `test/unit/server/http-router.test.ts`. The core files are `src/lib/chat/{http,service,types}.ts` and `src/lib/frontend/pages/ConversationPage.svelte`. The tool-free generation contract is documented in [OpenCode's HTTP API](https://opencode.ai/docs/api).

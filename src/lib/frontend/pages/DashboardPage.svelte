@@ -215,7 +215,7 @@
 >
 	<!-- Pinned header -->
 	<h1 class="text-2xl font-semibold mb-2 shrink-0">Conduit</h1>
-	<div class="text-base text-text-muted mb-6 shrink-0">Select a project</div>
+	<div class="text-base text-text-muted mb-6 shrink-0">Select a project · <a href="/chat" class="underline text-accent">Open Chat</a></div>
 
 	<!-- Scrollable project list area -->
 	<div class="relative flex-1 min-h-0 w-full max-w-[480px] px-5" data-testid="project-list-scroll-area">

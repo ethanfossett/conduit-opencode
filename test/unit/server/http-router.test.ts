@@ -1,12 +1,19 @@
 // ─── HTTP Router Tests ───────────────────────────────────────────────────────
 // Tests for the RequestRouter class extracted from server.ts and daemon.ts.
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdtempSync,
+	readdirSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AuthManager } from "../../../src/lib/auth.js";
+import { ChatService } from "../../../src/lib/chat/service.js";
 import {
 	MIME_TYPES,
 	RequestRouter,
@@ -48,6 +55,7 @@ function createTestServer(overrides: Partial<RequestRouterDeps> = {}): {
 
 	const deps: RequestRouterDeps = {
 		auth,
+		...(overrides.chat && { chat: overrides.chat }),
 		staticDir,
 		getProjects: overrides.getProjects ?? (() => projects),
 		port,
@@ -850,5 +858,96 @@ describe("RequestRouter", () => {
 			expect(body.hasPin).toBe(true);
 			expect(body.authenticated).toBe(false);
 		});
+	});
+});
+
+describe("projectless Chat", () => {
+	it("requires auth and a same-origin mutation header, and exposes no Code actions", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "conduit-chat-"));
+		const inputs: string[] = [];
+		const generate = async (input: string) => {
+			inputs.push(input);
+			return "Test reply";
+		};
+		const chatDirectory = join(directory, "chat");
+		const chat = new ChatService(chatDirectory, generate);
+		const auth = new AuthManager({ statePath: join(directory, "auth.json") });
+		auth.setPin("123456");
+		const app = createTestServer({ chat, auth, staticDir: sharedStaticDir });
+		await app.start();
+		try {
+			const request = (path: string, init?: RequestInit) =>
+				fetch(app.url(path), init);
+			const post = (body: unknown, includeHeader = true): RequestInit => ({
+				method: "POST",
+				body: JSON.stringify(body),
+				headers: {
+					"Content-Type": "application/json",
+					"X-Relay-Pin": "123456",
+					...(includeHeader && { "X-Conduit-Chat": "1" }),
+				},
+			});
+			expect((await request("/api/chat")).status).toBe(401);
+			expect((await request("/api/chat", post({}, false))).status).toBe(403);
+			expect((await request("/api/chat/terminal", post({}))).status).toBe(404);
+			expect(
+				(
+					await request(
+						"/api/chat/ffffffff-ffff-ffff-ffff-ffffffffffff",
+						post({ text: "Unknown ID" }),
+					)
+				).status,
+			).toBe(404);
+			expect(inputs).toEqual([]);
+
+			const first = await request("/api/chat", post({ temporary: false }));
+			expect(first.status).toBe(201);
+			expect(first.headers.get("Access-Control-Allow-Origin")).toBeNull();
+			expect(first.headers.get("Cache-Control")).toBe("no-store");
+			const persisted = await first.json();
+			const path = `/api/chat/${persisted.id}`;
+			expect(
+				(await request(path, post({ text: "No tools", tools: ["shell"] })))
+					.status,
+			).toBe(400);
+			expect(
+				(
+					await request(
+						path,
+						post({
+							text: "Use attachment",
+							attachments: [{ name: "note.txt", text: "test context" }],
+						}),
+					)
+				).status,
+			).toBe(200);
+			expect(inputs).toHaveLength(1);
+			expect(inputs[0]).toContain("test context");
+			const temp = await (
+				await request("/api/chat", post({ temporary: true }))
+			).json();
+			expect(
+				(await request(`/api/chat/${temp.id}`, post({ text: "Transient" })))
+					.status,
+			).toBe(200);
+
+			const restarted = new ChatService(chatDirectory, generate);
+			expect((await restarted.list()).map((summary) => summary.id)).toEqual([
+				persisted.id,
+			]);
+			expect((await restarted.get(persisted.id)).messages.at(-1)?.text).toBe(
+				"Test reply",
+			);
+			await expect(restarted.get(temp.id)).rejects.toMatchObject({
+				status: 404,
+			});
+			expect(readdirSync(chatDirectory)).toEqual([`${persisted.id}.json`]);
+			expect(
+				statSync(join(chatDirectory, `${persisted.id}.json`)).mode & 0o777,
+			).toBe(0o600);
+		} finally {
+			await app.stop();
+			rmSync(directory, { recursive: true, force: true });
+		}
 	});
 });

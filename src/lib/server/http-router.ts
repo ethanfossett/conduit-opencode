@@ -7,6 +7,8 @@
 import { readFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AuthManager } from "../auth.js";
+import { handleChatApi } from "../chat/http.js";
+import type { ChatService } from "../chat/service.js";
 import { createLogger } from "../logger.js";
 import type {
 	ApiError,
@@ -74,6 +76,7 @@ export interface RouterProject {
 }
 
 export interface RequestRouterDeps {
+	chat?: ChatService;
 	auth: AuthManager;
 	staticDir: string;
 	getProjects: () => RouterProject[];
@@ -116,6 +119,7 @@ function serializeProject(p: RouterProject): DashboardProjectResponse {
 // ─── RequestRouter ───────────────────────────────────────────────────────────
 
 export class RequestRouter {
+	private readonly chat: ChatService | undefined;
 	private readonly auth: AuthManager;
 	private readonly staticDir: string;
 	private readonly getProjects: () => RouterProject[];
@@ -130,6 +134,7 @@ export class RequestRouter {
 	private readonly caCertDer?: Buffer;
 
 	constructor(deps: RequestRouterDeps) {
+		this.chat = deps.chat;
 		this.auth = deps.auth;
 		this.staticDir = deps.staticDir;
 		this.getProjects = deps.getProjects;
@@ -156,10 +161,12 @@ export class RequestRouter {
 			`http://${req.headers.host ?? "localhost"}`,
 		);
 		const pathname = url.pathname;
+		const isChatApi =
+			pathname === "/api/chat" || pathname.startsWith("/api/chat/");
 
 		try {
-			// CORS headers on every response
-			res.setHeader("Access-Control-Allow-Origin", "*");
+			// Chat is same-origin, including preflight and authentication responses.
+			if (!isChatApi) res.setHeader("Access-Control-Allow-Origin", "*");
 			res.setHeader(
 				"Access-Control-Allow-Methods",
 				"GET, POST, PATCH, DELETE, OPTIONS",
@@ -207,6 +214,8 @@ export class RequestRouter {
 							(pathname === "/" ||
 								pathname === "" ||
 								pathname === "/auth" ||
+								pathname === "/chat" ||
+								pathname === "/chat/" ||
 								pathname.startsWith("/p/"));
 						const isApiRoute =
 							pathname.startsWith("/api/") || isProjectApiRoute;
@@ -313,6 +322,18 @@ export class RequestRouter {
 						} satisfies ApiError),
 					);
 				}
+				return;
+			}
+
+			if (isChatApi) {
+				await handleChatApi(this.chat, pathname, req, res);
+				return;
+			}
+			if (
+				(pathname === "/chat" || pathname === "/chat/") &&
+				req.method === "GET"
+			) {
+				await this.serveStaticFile(res, "index.html");
 				return;
 			}
 
