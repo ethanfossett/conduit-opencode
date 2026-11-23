@@ -1,9 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readRawBody } from "../server/http-utils.js";
+import { configuredDuplexEndpoint } from "./duplex.js";
 import { handleChatFiles } from "./file-http.js";
 import { ChatError, type ChatService } from "./service.js";
 import type {
 	ChatAttachment,
+	ChatContextChange,
 	ChatDocumentApproval,
 	ChatFileSelection,
 	ChatTurnRequest,
@@ -28,7 +30,7 @@ export async function handleChatApi(
 		if (service && (await handleChatFiles(service, path, req, res, respond)))
 			return;
 		const match =
-			/^\/api\/chat\/([0-9a-f-]{36})(\/search(?:\/read)?|\/turns(?:\/stop)?|\/metadata|\/file-review)?$/.exec(
+			/^\/api\/chat\/([0-9a-f-]{36})(\/search(?:\/read)?|\/turns(?:\/stop)?|\/metadata|\/context(?:\/preview)?|\/file-review)?$/.exec(
 				path,
 			);
 		const id = match?.[1];
@@ -41,6 +43,9 @@ export async function handleChatApi(
 				searchEnabled: service?.searchEnabled ?? false,
 				turnsEnabled: !!service,
 				filesEnabled: service?.files.enabled ?? false,
+				contextEnabled: !!service,
+				duplexEnabled: !!service && !!configuredDuplexEndpoint(),
+				reasoningEnabled: service?.reasoningEnabled ?? false,
 				ocrEnabled: service?.files.ocrEnabled ?? false,
 				conversations:
 					(await service?.list(
@@ -134,6 +139,45 @@ export async function handleChatApi(
 			if (Object.keys(body).length !== 1 || !isRequestId(body["requestId"]))
 				throw new ChatError(400, "A valid turn ID is required.");
 			respond(res, 200, await service.stopTurn(id, body["requestId"]));
+			return;
+		}
+		if (id && operation === "/context/preview") {
+			const { draft, editFrom } = body;
+			if (
+				Object.keys(body).some(
+					(key) => key !== "draft" && key !== "editFrom",
+				) ||
+				typeof draft !== "string" ||
+				draft.length > 24_000 ||
+				(editFrom !== undefined &&
+					(typeof editFrom !== "number" || !Number.isSafeInteger(editFrom)))
+			)
+				throw new ChatError(400, "Enter a valid draft to preview context.");
+			respond(res, 200, await service.previewContext(id, draft, editFrom));
+			return;
+		}
+		if (id && operation === "/context") {
+			const { index, change, revision } = body;
+			if (
+				Object.keys(body).length !== 3 ||
+				typeof index !== "number" ||
+				!Number.isSafeInteger(index) ||
+				typeof revision !== "number" ||
+				!Number.isSafeInteger(revision) ||
+				typeof change !== "string" ||
+				!["pin", "unpin", "exclude", "restore"].includes(change)
+			)
+				throw new ChatError(400, "Choose a message and context action.");
+			respond(
+				res,
+				200,
+				await service.updateContext(
+					id,
+					index,
+					change as ChatContextChange,
+					revision,
+				),
+			);
 			return;
 		}
 		if (id && operation === "/metadata") {
@@ -262,6 +306,7 @@ function readTurn(body: Record<string, unknown>): ChatTurnRequest {
 	const editFrom = body["editFrom"];
 	const regenerate = body["regenerate"];
 	const retry = body["retry"];
+	const reasoning = body["reasoning"];
 	if (
 		!isRequestId(requestId) ||
 		Object.keys(body).some(
@@ -276,10 +321,12 @@ function readTurn(body: Record<string, unknown>): ChatTurnRequest {
 					"editFrom",
 					"regenerate",
 					"retry",
+					"reasoning",
 				].includes(key),
 		) ||
 		(regenerate !== undefined && regenerate !== true) ||
 		(retry !== undefined && retry !== true) ||
+		(reasoning !== undefined && reasoning !== "low" && reasoning !== "high") ||
 		(regenerate || retry
 			? Object.keys(body).length !== 2
 			: typeof text !== "string") ||
@@ -293,6 +340,7 @@ function readTurn(body: Record<string, unknown>): ChatTurnRequest {
 	}
 	return {
 		requestId,
+		...((reasoning === "low" || reasoning === "high") && { reasoning }),
 		...(typeof text === "string" && { text }),
 		...(body["attachments"] !== undefined && {
 			attachments: readAttachments(body["attachments"]),

@@ -2,9 +2,10 @@
 	import { onMount, tick } from "svelte";
 	import ChatFilesPanel from "../components/chat/ChatFilesPanel.svelte";
 	import { type DraftPdf, pdfSelections } from "../utils/chat-file-drafts.js";
+	import ChatDuplex from "../components/chat/ChatDuplex.svelte";
 	import ChatDictation from "../components/chat/ChatDictation.svelte";
 	import { createChatSpeech } from "../utils/chat-speech.svelte.js";
-	import type { ChatAttachment, ChatDocumentCitation, ChatDocumentReview, ChatConversation, ChatSearchResult, ChatSummary, ChatTurnRequest } from "../../chat/types.js";
+	import type { ChatAttachment, ChatContextChange, ChatContextEntry, ChatReasoning, ChatDocumentCitation, ChatDocumentReview, ChatConversation, ChatSearchResult, ChatSummary, ChatTurnRequest } from "../../chat/types.js";
 	import { clearAcceptedDraft, draftKey, loadDraft, saveDraft } from "../utils/drafts.js";
 	import { renderMarkdown } from "../utils/markdown.js";
 	import { stageChatHandoff } from "../stores/chat-handoff.svelte.js";
@@ -18,6 +19,13 @@
 			this.status = status;
 		}
 	}
+	let contextEnabled = $state(false);
+	let showContext = $state(false);
+	let contextPreview = $state<{ draft: string; entries: ChatContextEntry[] } | null>(null);
+	let duplexEnabled = $state(false);
+	let voiceActive = $state(false);
+	let reasoningEnabled = $state(false);
+	let reasoning = $state<ChatReasoning | "">("");
 	let turnsEnabled = $state(false);
 	let inboxQuery = $state("");
 	let appliedInboxQuery = $state("");
@@ -95,14 +103,44 @@
 	}
 
 	async function refresh(query = appliedInboxQuery) {
-		const result = await api<{enabled: boolean; searchEnabled: boolean; turnsEnabled?: boolean; filesEnabled?: boolean; ocrEnabled?: boolean; conversations: ChatSummary[]}>(query ? `?q=${encodeURIComponent(query)}` : "");
+		const result = await api<{enabled: boolean; searchEnabled: boolean; turnsEnabled?: boolean; filesEnabled?: boolean; ocrEnabled?: boolean; contextEnabled?: boolean; reasoningEnabled?: boolean; duplexEnabled?: boolean; conversations: ChatSummary[]}>(query ? `?q=${encodeURIComponent(query)}` : "");
 		enabled = result.enabled;
 		searchEnabled = result.searchEnabled;
+		contextEnabled = result.contextEnabled ?? false;
+		duplexEnabled = result.duplexEnabled ?? false;
+		reasoningEnabled = result.reasoningEnabled ?? false;
 		turnsEnabled = result.turnsEnabled ?? false;
 		filesEnabled = result.filesEnabled ?? false;
 		ocrEnabled = result.ocrEnabled ?? false;
 		conversations = result.conversations;
 		appliedInboxQuery = query;
+	}
+
+	function changeContext(index: number, change: ChatContextChange) {
+		const current = chat;
+		if (!current || busy || sending) return;
+		void run(async () => {
+			chat = await api<ChatConversation>(`/${current.id}/context`, "POST", { index, change, revision: current.updatedAt });
+			contextPreview = null;
+		});
+	}
+
+	function previewContext() {
+		const id = chat?.id;
+		if (!id || !text.trim()) return;
+		const draft = text.trim();
+		void run(async () => {
+			const entries = await api<ChatContextEntry[]>(`/${id}/context/preview`, "POST", {
+				draft, ...(editFrom !== null && { editFrom }),
+			});
+			if (chat?.id === id) contextPreview = { draft, entries };
+		});
+	}
+
+	function jumpToMessage(index: number) {
+		const source = document.getElementById(`chat-source-${index}`);
+		source?.scrollIntoView({ block: "center" });
+		source?.focus({ preventScroll: true });
 	}
 
 	function searchInbox(event: SubmitEvent) {
@@ -221,7 +259,7 @@
 		return `${draftKey("conversation", id)}:submitted`;
 	}
 
-	function readPending(conversation: ChatConversation): { requestId: string; text: string; pdfSnapshot?: string } | null {
+	function readPending(conversation: ChatConversation): { requestId: string; text: string; pdfSnapshot?: string; reasoning?: ChatReasoning } | null {
 		if (conversation.temporary) return null;
 		try {
 			return JSON.parse(loadDraft(pendingKey(conversation.id)) || "null");
@@ -286,6 +324,9 @@
 		speech.stop();
 		chat = conversation;
 		showManage = false;
+		showContext = false;
+		contextPreview = null;
+		reasoning = "";
 		titleDraft = conversation?.title ?? "";
 		editFrom = null;
 		previousDraft = null;
@@ -462,15 +503,15 @@
 
 	function runTurn(request: Omit<ChatTurnRequest, "requestId">, submitted?: string) {
 		const conversation = chat;
-		if (!conversation || sending || dictationActive) return;
+		if (!conversation || sending || dictationActive || voiceActive) return;
 		speech.stop();
 		const pending = readPending(conversation);
 		const pdfSnapshot = conversation.temporary ? "" : loadDraft(pdfKey(conversation.id));
-		const requestId = submitted !== undefined && pending?.text === submitted && (pending.pdfSnapshot ?? "") === pdfSnapshot
+		const requestId = submitted !== undefined && pending?.text === submitted && pending.reasoning === request.reasoning && (pending.pdfSnapshot ?? "") === pdfSnapshot
 			? pending.requestId : crypto.randomUUID();
 		void run(async () => {
 			if (submitted !== undefined && !conversation.temporary) {
-				saveDraft(pendingKey(conversation.id), JSON.stringify({ requestId, text: submitted, pdfSnapshot }));
+				saveDraft(pendingKey(conversation.id), JSON.stringify({ requestId, text: submitted, pdfSnapshot, reasoning: request.reasoning }));
 			}
 			try {
 				chat = await api<ChatConversation>(`/${conversation.id}/turns`, "POST", { requestId, ...request });
@@ -481,6 +522,7 @@
 				throw err;
 			}
 			acknowledge(chat);
+			contextPreview = null;
 			if (editFrom !== null) {
 				endEdit();
 			} else if (submitted !== undefined) {
@@ -520,7 +562,7 @@
 		event.preventDefault();
 		const conversation = chat;
 		const prompt = text.trim();
-		if (!conversation || !prompt || busy || sending || showHandoff || dictationActive || filesBusy) return;
+		if (!conversation || !prompt || busy || sending || showHandoff || dictationActive || voiceActive || filesBusy) return;
 		let documentApproval: ChatTurnRequest["documentApproval"];
 		if (pdfDraft.length) {
 			if (!pdfReview) {
@@ -546,6 +588,7 @@
 		if (turnsEnabled) {
 			runTurn({
 				...submission,
+				...(reasoningEnabled && reasoning && { reasoning }),
 				...(editFrom !== null && { editFrom }),
 			}, editFrom === null ? text : undefined);
 			return;
@@ -615,6 +658,9 @@
 				{#if chat}
 					<div class="flex flex-wrap justify-between gap-2 border-b border-border px-4 py-2 text-xs text-text-muted">
 						<span>{chat.temporary ? "Temporary · erased on relay restart or after 1 hour idle" : chat.title}</span>
+						{#if contextEnabled}
+							<button type="button" class="underline" aria-expanded={showContext} onclick={() => (showContext = !showContext)}>Context</button>
+						{/if}
 						{#if turnsEnabled && !chat.temporary}
 							<button type="button" class="underline" disabled={busy || sending} aria-expanded={showManage} onclick={() => {
 								titleDraft = chat?.title ?? "";
@@ -649,10 +695,57 @@
 							<button type="button" class="underline" onclick={exportChat}>Export JSON</button>
 						</div>
 					{/if}
+					{#if showContext && contextEnabled}
+						<section aria-label="Conversation context" class="max-h-[30dvh] space-y-3 overflow-auto border-b border-border px-4 py-3 text-xs">
+							<p class="text-text-muted">Conduit recalls relevant messages in this chat. Pin a message to carry it forward, or exclude it from future replies. Excluding a prompt also omits its immediate reply.</p>
+							<button type="button" class="underline disabled:opacity-50" disabled={busy || sending || !text.trim()} onclick={previewContext}>Preview context for draft</button>
+							{#if contextPreview?.draft === text.trim()}
+								<p class="text-text-muted">This previews conversation history. Approved attachments may change how much history fits.</p>
+								{#if contextPreview.entries.length}
+									<ul class="space-y-1">
+										{#each contextPreview.entries as entry (entry.index)}
+											<li><button type="button" class="text-left underline" onclick={() => jumpToMessage(entry.index)}>{entry.kind} · {entry.text.slice(0, 180)}</button></li>
+										{/each}
+									</ul>
+								{:else}
+									<p>No earlier messages selected.</p>
+								{/if}
+							{/if}
+							{#if chat.pinnedContext?.length}
+								<h2 class="font-medium">Pinned for future replies</h2>
+								<ul class="space-y-1">
+									{#each chat.pinnedContext as index (index)}
+										<li><button type="button" class="underline" onclick={() => jumpToMessage(index)}>{chat.messages[index]?.text.slice(0, 100)}</button></li>
+									{/each}
+								</ul>
+							{/if}
+							{#if chat.lastContext?.entries.length}
+								<h2 class="font-medium">Used for the last reply</h2>
+								<ul class="space-y-1">
+									{#each chat.lastContext.entries as { index, kind } (index)}
+										<li><button type="button" class="text-left underline" onclick={() => jumpToMessage(index)}>{kind} · {chat.messages[index]?.text.slice(0, 100)}</button></li>
+									{/each}
+								</ul>
+							{:else}
+								<p class="text-text-muted">No earlier messages were used for the last reply.</p>
+							{/if}
+							{#if chat.excludedContext?.length}
+								<h2 class="font-medium">Excluded from future replies</h2>
+								<ul class="space-y-1">
+									{#each chat.excludedContext as index (index)}
+										<li class="flex flex-wrap gap-2">
+											<button type="button" class="underline" onclick={() => jumpToMessage(index)}>{chat.messages[index]?.text.slice(0, 100)}</button>
+											<button type="button" class="underline" disabled={busy || sending} onclick={() => changeContext(index, "restore")}>Restore to context</button>
+										</li>
+									{/each}
+								</ul>
+							{/if}
+						</section>
+					{/if}
 					<div bind:this={scroll} class="min-h-0 flex-1 overflow-auto px-4 py-5" role="log" aria-label="Messages">
 						<div class="mx-auto max-w-2xl space-y-5">
 							{#each visibleMessages as message, index}
-								<div class="break-words rounded-xl px-4 py-3 text-sm" class:bg-bg-alt={message.role === "user"}>
+								<div id={`chat-source-${index}`} tabindex="-1" class="break-words rounded-xl px-4 py-3 text-sm" class:bg-bg-alt={message.role === "user"}>
 									<span class="mb-1 block text-xs font-medium text-text-muted">{message.role === "user" ? "You" : "Cyber v1"}</span>
 									{#if message.role === "assistant"}
 										<div class="md-content overflow-x-auto text-sm leading-relaxed">{@html renderMarkdown(message.text, chatMarkdown)}</div>
@@ -681,6 +774,14 @@
 									{/if}
 									<div class="mt-2 flex flex-wrap gap-3 text-xs text-text-muted">
 										<button type="button" class="underline" onclick={() => copy(message.text)}>Copy</button>
+										{#if contextEnabled && showContext && index >= (chat.contextStart ?? 0) && !message.documents?.length && !message.attachments?.length && !message.sourceContext && !message.fileCitations?.length && !(message.role === "assistant" && (chat.messages[index - 1]?.documents?.length || chat.messages[index - 1]?.attachments?.length || chat.messages[index - 1]?.sourceContext))}
+											{#if chat.excludedContext?.includes(index)}
+												<button type="button" class="underline" disabled={busy || sending} onclick={() => changeContext(index, "restore")}>Restore to context</button>
+											{:else}
+												<button type="button" class="underline" disabled={busy || sending} onclick={() => changeContext(index, chat?.pinnedContext?.includes(index) ? "unpin" : "pin")}>{chat.pinnedContext?.includes(index) ? "Unpin from context" : "Pin to context"}</button>
+												<button type="button" class="underline" disabled={busy || sending} onclick={() => changeContext(index, "exclude")}>Exclude from context</button>
+											{/if}
+										{/if}
 										<button type="button" class="underline" disabled={busy || sending} onclick={() => prepareHandoff(message.text)}>Continue in Code</button>
 										{#if turnsEnabled && index === lastPrompt && message.role === "user"}
 											<button type="button" class="underline" disabled={busy || sending || editFrom !== null || dictationActive} onclick={() => beginEdit(index)}>Edit prompt</button>
@@ -690,7 +791,7 @@
 												<button type="button" class="underline" onclick={speech.togglePause}>{speech.state.paused ? "Resume playback" : "Pause playback"}</button>
 												<button type="button" class="underline" onclick={speech.stop}>Stop playback</button>
 											{:else}
-												<button type="button" class="underline" disabled={dictationActive} onclick={() =>
+												<button type="button" class="underline" disabled={dictationActive || voiceActive} onclick={() =>
 													speech.play(index, renderMarkdown(message.text, chatMarkdown))}>Read aloud</button>
 											{/if}
 										{/if}
@@ -713,7 +814,7 @@
 								<div class="space-y-2 px-4 py-3 text-sm">
 									{#if chat.turn.reply}<div class="md-content overflow-x-auto leading-relaxed">{@html renderMarkdown(chat.turn.reply, chatMarkdown)}</div>{/if}
 									{#if sending}
-										<span class="text-text-muted">{offline ? "Reconnecting…" : "Cyber v1 is replying…"}</span>
+										<span class="text-text-muted">{offline ? "Reconnecting…" : chat.turn.prompt.reasoning === "high" && !chat.turn.reply ? "Thinking…" : "Cyber v1 is replying…"}</span>
 										<button type="button" class="ms-2 underline" disabled={busy} onclick={stop}>Stop</button>
 									{:else}
 										<span>{chat.turn.error ?? "Reply stopped."}</span>
@@ -843,7 +944,7 @@
 							{/if}
 							<label class="cursor-pointer text-text-muted underline">Attach text files<input type="file" accept="text/*,.md,.json,.csv,.log" multiple disabled={busy} onchange={attach} class="sr-only" /></label>
 							{#each [chat.id] as dictationChatId (dictationChatId)}
-								<ChatDictation disabled={busy || sending || showHandoff}
+								<ChatDictation disabled={busy || sending || showHandoff || voiceActive}
 									onCapture={speech.stop}
 									onActivity={(active) => (dictationActive = active)}
 									onTranscript={(transcript) => appendDictation(dictationChatId, transcript)} />
@@ -854,9 +955,23 @@
 									else showSearch = true;
 								}}>Web search</button>
 							{/if}
-							<button type="submit" disabled={busy || sending || showHandoff || dictationActive || filesBusy || !text.trim()} class="rounded-lg bg-accent px-4 py-2 text-bg disabled:opacity-50">{pdfDraft.length ? "Send with excerpts" : editFrom === null ? "Send" : "Send edit"}</button>
+							{#if duplexEnabled}
+								{#key chat.id}
+									<ChatDuplex chatId={chat.id} disabled={busy || sending || dictationActive}
+										onActivity={(active) => { voiceActive = active; if (active) speech.stop(); }} />
+								{/key}
+							{/if}
+							{#if reasoningEnabled}
+								<label class="sr-only" for="chat-reasoning">Reasoning effort</label>
+								<select id="chat-reasoning" bind:value={reasoning} disabled={busy || sending} class="rounded border border-border bg-bg-surface px-2 py-1 text-sm">
+									<option value="">Default</option>
+									<option value="low">Fast</option>
+									<option value="high">Think deeper</option>
+								</select>
+							{/if}
+							<button type="submit" disabled={busy || sending || showHandoff || dictationActive || voiceActive || filesBusy || !text.trim()} class="rounded-lg bg-accent px-4 py-2 text-bg disabled:opacity-50">{pdfDraft.length ? "Send with excerpts" : editFrom === null ? "Send" : "Send edit"}</button>
 						</div>
-						<p class="text-xs text-text-muted">{pdfDraft.length ? "PDFs are stored on Conduit. Sending includes text excerpts from the selected pages." : "NodeCode receives the message, recent context, and any text you attach."}</p>
+						<p class="text-xs text-text-muted">{pdfDraft.length ? "PDFs are stored on Conduit. Sending includes text excerpts from the selected pages." : "NodeCode receives the message, selected conversation context, and any text you attach."}</p>
 					</form>
 				{:else}
 					<div class="grid flex-1 place-content-center p-6 text-center">

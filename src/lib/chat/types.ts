@@ -3,9 +3,12 @@ export interface ChatAttachment {
 	text: string;
 }
 
+export type ChatReasoning = "low" | "high";
+
 export interface ChatMessage {
 	role: "user" | "assistant";
 	text: string;
+	reasoning?: ChatReasoning;
 	attachments?: ChatAttachment[];
 	documents?: ChatDocumentContext[];
 	documentsReviewed?: boolean;
@@ -25,7 +28,29 @@ export interface ChatConversation {
 	turn?: ChatTurn;
 	receipts?: string[];
 	contextStart?: number;
+	pinnedContext?: number[];
+	excludedContext?: number[];
+	lastContext?: {
+		index: number;
+		entries: Pick<ChatContextEntry, "index" | "kind">[];
+	};
 }
+
+export interface ChatContextEntry {
+	index: number;
+	kind:
+		| "Recent"
+		| "Pinned"
+		| "Goal"
+		| "Decision"
+		| "Constraint"
+		| "Open question"
+		| "Recalled";
+	role: ChatMessage["role"];
+	text: string;
+}
+
+export type ChatContextChange = "pin" | "unpin" | "exclude" | "restore";
 
 export interface ChatSource {
 	url: string;
@@ -51,6 +76,7 @@ export interface ChatTurn {
 
 export interface ChatTurnRequest {
 	requestId: string;
+	reasoning?: ChatReasoning;
 	text?: string;
 	attachments?: ChatAttachment[];
 	files?: ChatFileSelection[];

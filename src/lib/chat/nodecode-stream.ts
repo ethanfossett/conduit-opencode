@@ -1,5 +1,7 @@
 import { NODECODE_MODEL_ID } from "../nodecode.js";
 
+import type { ChatReasoning } from "./types.js";
+
 const MAX_REPLY = 64_000;
 
 export async function streamNodeCode(
@@ -7,6 +9,7 @@ export async function streamNodeCode(
 	prompt: string,
 	signal: AbortSignal,
 	onText: (text: string) => void,
+	reasoning?: ChatReasoning,
 ): Promise<string> {
 	const response = await fetch("https://api.nodecode.ai/v1/chat/completions", {
 		method: "POST",
@@ -18,6 +21,7 @@ export async function streamNodeCode(
 		body: JSON.stringify({
 			model: NODECODE_MODEL_ID,
 			stream: true,
+			...(reasoning && { reasoning_effort: reasoning }),
 			messages: [{ role: "user", content: prompt }],
 		}),
 		redirect: "error",
