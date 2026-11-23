@@ -1,12 +1,13 @@
 <script lang="ts">
 	import { onMount } from "svelte";
-	import type { ChatDocumentCitation, ChatFile } from "../../../chat/types.js";
+	import type { ChatDocumentCitation, ChatFile, ChatPageText } from "../../../chat/types.js";
 	import type { DraftPdf } from "../../utils/chat-file-drafts.js";
 
 	type View = { id: string; name: string; page: number; excerpt?: string };
 	let {
 		chatId,
 		temporary,
+		ocrEnabled,
 		selected,
 		initialPage,
 		onChange,
@@ -16,6 +17,7 @@
 	}: {
 		chatId?: string;
 		temporary: boolean;
+		ocrEnabled: boolean;
 		selected: DraftPdf[];
 		initialPage?: ChatDocumentCitation;
 		onChange: (files: DraftPdf[]) => void;
@@ -29,6 +31,8 @@
 	let query = $state("");
 	let allUploads = $state(false);
 	let details = $state<ChatFile | null>(null);
+	let pageText = $state<ChatPageText | null>(null);
+	let reading = $state(false);
 	let uses = $state<{ id: string; title: string }[]>([]);
 	let name = $state("");
 	let confirmDelete = $state(false);
@@ -43,10 +47,10 @@
 	const uploadLimit = 10 * 1024 * 1024;
 	const available = $derived(!!chatId && selected.length < 4);
 
-	async function request<T>(path: string, method = "GET", body?: unknown): Promise<T> {
+	async function request<T>(path: string, method = "GET", body?: unknown, timeout = 15_000): Promise<T> {
 		const response = await fetch(`/api/chat${path}`, {
 			method,
-			signal: AbortSignal.timeout(15_000),
+			signal: AbortSignal.timeout(timeout),
 			headers: { "X-Conduit-Chat": "1", ...(body !== undefined && { "Content-Type": "application/json" }) },
 			...(body !== undefined && { body: JSON.stringify(body) }),
 		});
@@ -94,6 +98,7 @@
 
 	async function openPage(id: string, label: string, page = 1, excerpt?: string) {
 		view = { id, name: label, page, excerpt };
+		pageText = null;
 		details = null;
 		uses = [];
 		confirmDelete = false;
@@ -138,7 +143,9 @@
 				if (!dropped) {
 					add(stored);
 					files = [stored, ...files];
-					if (!stored.textPages) notice = "PDF added for preview. Scanned pages need OCR before they can be used in an answer.";
+					if (!stored.textPages) notice = ocrEnabled
+						? "Scanned PDF added. Open a page and choose Read text from this page."
+						: "PDF added for preview. Local OCR is unavailable on this server.";
 				}
 			} finally {
 				progress = null;
@@ -185,10 +192,47 @@
 		});
 	}
 
+	function readText() {
+		const current = view;
+		if (!current) return;
+		void run(async () => {
+			reading = true;
+			try {
+				const suffix = chatId ? `?chat=${encodeURIComponent(chatId)}` : "";
+				const result = await request<ChatPageText>(`/files/${current.id}/page/${current.page}/text${suffix}`, "POST", undefined, 45_000);
+				if (dropped) return;
+				pageText = result;
+				details = result.file;
+				files = files.map((file) => file.id === result.file.id ? result.file : file);
+				if (selected.some(({file}) => file.id === result.file.id)) {
+					onChange(selected.map((item) => item.file.id === result.file.id ? { ...item, file: result.file } : item));
+				}
+			} finally {
+				reading = false;
+			}
+		});
+	}
+
+	function usePage(result: ChatPageText) {
+		const { file, page } = result;
+		if (!chatId) return;
+		const existing = selected.some((item) => item.file.id === file.id);
+		if (existing) onChange(selected.map((item) =>
+			item.file.id === file.id ? { file, pageInput: String(page) } : item));
+		else if (available) onChange([...selected, { file, pageInput: String(page) }]);
+		else return;
+		notice = `Page ${page} selected in your draft. Review its excerpt before sending.`;
+	}
+
 	function turnPage(offset: number) {
 		if (!view || !details) return;
 		const page = view.page + offset;
-		if (page >= 1 && page <= details.pages) view = { id: view.id, name: view.name, page };
+		if (page >= 1 && page <= details.pages) {
+			view = { id: view.id, name: view.name, page };
+			pageText = null;
+			error = "";
+			notice = "";
+		}
 	}
 </script>
 
@@ -214,16 +258,34 @@
 				{/if}
 			</div>
 			<div class="mb-3 flex items-center justify-between gap-2 text-sm">
-				<button type="button" class="rounded border border-border px-3 py-2 disabled:opacity-50" disabled={view.page <= 1} onclick={() => turnPage(-1)}>Previous page</button>
+				<button type="button" class="rounded border border-border px-3 py-2 disabled:opacity-50" disabled={working || view.page <= 1} onclick={() => turnPage(-1)}>Previous page</button>
 				<span>Page {view.page} of {details.pages}</span>
-				<button type="button" class="rounded border border-border px-3 py-2 disabled:opacity-50" disabled={view.page >= details.pages} onclick={() => turnPage(1)}>Next page</button>
+				<button type="button" class="rounded border border-border px-3 py-2 disabled:opacity-50" disabled={working || view.page >= details.pages} onclick={() => turnPage(1)}>Next page</button>
 			</div>
 			{#if view.excerpt}<blockquote class="mb-3 max-h-36 overflow-auto whitespace-pre-wrap rounded bg-bg-alt p-3 text-sm">{view.excerpt}</blockquote>{/if}
+			{#if ocrEnabled}
+				<div class="mb-3 flex flex-wrap items-center gap-2 text-sm">
+					<button type="button" class="rounded border border-border px-3 py-2 disabled:opacity-50" disabled={working} aria-busy={reading} onclick={readText}>{reading ? "Reading locally…" : "Read text from this page"}</button>
+					{#if pageText && chatId && (selected.some((item) => item.file.id === pageText?.file.id) ||
+						(available && (details.saved || (!allUploads && files.some((item) => item.id === details?.id)))))}
+						<button type="button" class="rounded border border-border px-3 py-2" disabled={working} onclick={() => pageText && usePage(pageText)}>Use this page in draft</button>
+					{/if}
+				</div>
+			{/if}
+			<div class={pageText ? "grid gap-3 md:grid-cols-2" : ""}>
 			{#key `${view.id}:${view.page}`}
 				<img class="mx-auto block max-h-[60dvh] max-w-full rounded bg-white object-contain"
 					src={`/api/chat/files/${view.id}/page/${view.page}`} alt={`Page ${view.page} preview`}
 					onerror={() => (error = "Could not render this PDF page.")} />
 			{/key}
+			{#if pageText}
+				<section class="max-h-[45dvh] overflow-auto rounded border border-border bg-bg p-3 text-sm" aria-label="Local page text">
+					<h3 class="mb-2 font-medium">{pageText.source === "ocr" ? "OCR text" : "PDF text"} · Page {pageText.page}</h3>
+					{#if pageText.source === "ocr"}<p class="mb-2 text-xs text-text-muted">Read locally. Check names and numbers against the original page.</p>{/if}
+					<p class="whitespace-pre-wrap break-words">{pageText.text}</p>
+				</section>
+			{/if}
+			</div>
 			<section class="mt-4 space-y-2 border-t border-border pt-3 text-sm" aria-label="File management">
 				{#if !details.temporary}
 					<form class="flex gap-2" onsubmit={(event) => { event.preventDefault(); update({ name }); }}>

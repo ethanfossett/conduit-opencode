@@ -3,9 +3,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ChatFiles, documentCitations } from "../../../src/lib/chat/files.js";
+import { recognizePdfPage } from "../../../src/lib/chat/pdf.js";
 
 vi.mock("../../../src/lib/chat/pdf.js", () => ({
 	pdfAvailable: () => true,
+	pdfOcrAvailable: () => true,
+	pdfPageTextLimit: () => 16_000,
+	recognizePdfPage: vi.fn(
+		async (_bytes: Buffer, _page: number) =>
+			"Scanned receipt total is 48.72 dollars.",
+	),
 	extractPdf: async () => [
 		"First page introduction",
 		"The quarterly renewal fee is 321 dollars.",
@@ -215,4 +222,76 @@ it("requires exact reviewed excerpts and scrubs stored copies from conversations
 		app.closeAllConnections();
 		await new Promise<void>((resolve) => app.close(() => resolve()));
 	}
+});
+
+it("runs local OCR only for a chosen image page and keeps searchable results with the PDF", async () => {
+	const files = new ChatFiles(directory);
+	const document = await files.upload(
+		"owner",
+		"scan.pdf",
+		Buffer.from("image fixture"),
+		false,
+	);
+	const localOcr = vi.mocked(recognizePdfPage);
+	localOcr.mockClear();
+	expect(await files.readPageText(document.id, 2)).toMatchObject({
+		source: "native",
+	});
+	expect(localOcr).not.toHaveBeenCalled();
+	expect(await files.list("scanned receipt", "owner")).toEqual([]);
+
+	localOcr.mockRejectedValueOnce(new Error("Synthetic local OCR failure"));
+	await expect(files.readPageText(document.id, 3)).rejects.toThrow(
+		"Synthetic local OCR failure",
+	);
+	expect((await files.details(document.id)).textPages).toBe(2);
+	expect(await files.list("scanned receipt", "owner")).toEqual([]);
+
+	expect(await files.readPageText(document.id, 3)).toMatchObject({
+		source: "ocr",
+		page: 3,
+		text: "Scanned receipt total is 48.72 dollars.",
+	});
+	const reopened = new ChatFiles(directory);
+	expect(await reopened.readPageText(document.id, 3)).toMatchObject({
+		source: "ocr",
+	});
+	expect(localOcr).toHaveBeenCalledTimes(2);
+	expect(await reopened.list("48.72", "owner")).toHaveLength(1);
+	await reopened.remove(document.id);
+	expect(await reopened.list("48.72", "owner")).toEqual([]);
+});
+
+it("keeps Temporary Chat OCR in its original chat and behind excerpt review", async () => {
+	const { ChatService } = await import("../../../src/lib/chat/service.js");
+	const generate = vi.fn(async (_input: string) => "A cited reply [D1:p3]");
+	const service = new ChatService(directory, generate);
+	const owner = await service.create(true);
+	const another = await service.create(true);
+	const document = await service.uploadFile(
+		owner.id,
+		"temporary-scan.pdf",
+		Buffer.from("image fixture"),
+	);
+	await expect(
+		service.readPdfText(document.id, 3, another.id),
+	).rejects.toMatchObject({ status: 403 });
+	await expect(service.readPdfText(document.id, 3)).rejects.toMatchObject({
+		status: 403,
+	});
+	const ocr = await service.readPdfText(document.id, 3, owner.id);
+	const selections = [{ id: document.id, pages: [3] }];
+	const review = await service.reviewDocuments(
+		owner.id,
+		"What is the total?",
+		selections,
+	);
+	expect(review.documents[0]?.pages[0]?.excerpt).toBe(ocr.text);
+	expect(generate).not.toHaveBeenCalled();
+	expect(await readdir(directory)).toEqual([]);
+	await service.remove(owner.id);
+	await expect(service.files.details(document.id)).rejects.toMatchObject({
+		status: 404,
+	});
+	expect(await readdir(directory)).toEqual([]);
 });

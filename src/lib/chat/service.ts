@@ -271,6 +271,24 @@ export class ChatService {
 		}
 	}
 
+	async readPdfText(fileId: string, page: number, chatId?: string) {
+		this.checkFileDeletion();
+		this.expireTemporary();
+		const lock = chatId ?? `file:${fileId}`;
+		if (this.pending.has(lock))
+			throw new ChatError(409, "Wait for the active request.");
+		this.pending.add(lock);
+		try {
+			const chat = chatId ? await this.get(chatId) : undefined;
+			const result = await this.files.readPageText(fileId, page, chatId);
+			if (chat?.temporary) await this.save({ ...chat, updatedAt: Date.now() });
+			return result;
+		} finally {
+			this.pending.delete(lock);
+			this.expireTemporary();
+		}
+	}
+
 	async reviewDocuments(
 		id: string,
 		prompt: string,

@@ -9,17 +9,26 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { ChatError } from "./errors.js";
-import { extractPdf, pdfAvailable, renderPdfPage } from "./pdf.js";
+import {
+	extractPdf,
+	pdfAvailable,
+	pdfOcrAvailable,
+	pdfPageTextLimit,
+	recognizePdfPage,
+	renderPdfPage,
+} from "./pdf.js";
 import type {
 	ChatDocumentCitation,
 	ChatDocumentContext,
 	ChatFile,
 	ChatFileSelection,
+	ChatPageText,
 } from "./types.js";
 
 interface DocumentRecord extends ChatFile {
 	owner: string;
 	text: string[];
+	ocrPages?: number[];
 }
 
 export const MAX_FILE_BYTES = 10 * 1024 * 1024;
@@ -38,6 +47,21 @@ export class ChatFiles {
 
 	get enabled() {
 		return pdfAvailable();
+	}
+
+	get ocrEnabled() {
+		return pdfOcrAvailable();
+	}
+
+	private async writeMetadata(record: DocumentRecord) {
+		const folder = this.path(record.id);
+		const staging = join(folder, `.metadata-${randomUUID()}`);
+		try {
+			await writeFile(staging, JSON.stringify(record), { mode: 0o600 });
+			await rename(staging, join(folder, "metadata.json"));
+		} finally {
+			await rm(staging, { force: true });
+		}
 	}
 
 	private path(id: string) {
@@ -216,14 +240,7 @@ export class ChatFiles {
 				...changes,
 				...(changes.name !== undefined && { name: cleanName(changes.name) }),
 			};
-			const folder = this.path(id);
-			const staging = join(folder, `.metadata-${randomUUID()}`);
-			try {
-				await writeFile(staging, JSON.stringify(updated), { mode: 0o600 });
-				await rename(staging, join(folder, "metadata.json"));
-			} finally {
-				await rm(staging, { force: true });
-			}
+			await this.writeMetadata(updated);
 			return this.summary(updated);
 		} finally {
 			this.writing = false;
@@ -264,6 +281,58 @@ export class ChatFiles {
 		return renderPdfPage(bytes, page);
 	}
 
+	async readPageText(
+		id: string,
+		page: number,
+		chatId?: string,
+	): Promise<ChatPageText> {
+		if (this.writing)
+			throw new ChatError(429, "File storage is busy. Try again shortly.");
+		this.writing = true;
+		try {
+			const record = await this.record(id);
+			if (record.temporary && record.owner !== chatId)
+				throw new ChatError(
+					403,
+					"Temporary files stay in their original chat.",
+				);
+			if (!Number.isInteger(page) || page < 1 || page > record.pages)
+				throw new ChatError(404, "Page not found.");
+			const existing = record.text[page - 1];
+			if (existing)
+				return {
+					file: this.summary(record),
+					page,
+					text: existing,
+					source: record.ocrPages?.includes(page) ? "ocr" : "native",
+				};
+			const transient = this.temporary.get(id);
+			const bytes =
+				transient?.bytes ??
+				(await readFile(join(this.path(id), "original.pdf")));
+			const text = (await recognizePdfPage(bytes, page)).slice(
+				0,
+				pdfPageTextLimit(record.pages),
+			);
+			const pages = [...record.text];
+			pages[page - 1] = text;
+			const updated = {
+				...record,
+				text: pages,
+				textPages: pages.filter(Boolean).length,
+				ocrPages: [...(record.ocrPages ?? []), page],
+			};
+			if (transient) {
+				if (this.temporary.get(id) !== transient)
+					throw new ChatError(404, "Temporary PDF expired.");
+				this.temporary.set(id, { record: updated, bytes });
+			} else await this.writeMetadata(updated);
+			return { file: this.summary(updated), page, text, source: "ocr" };
+		} finally {
+			this.writing = false;
+		}
+	}
+
 	async context(
 		owner: string,
 		temporary: boolean,
@@ -282,7 +351,7 @@ export class ChatFiles {
 				if (!pages.length)
 					throw new ChatError(
 						422,
-						"The selected pages have no extractable text. Choose pages with selectable text.",
+						"No text is available for the selected pages. Open a page and choose Read text from this page.",
 					);
 				return { id: record.id, name: record.name, pages };
 			}),
@@ -308,7 +377,7 @@ function choosePages(
 	if (selected?.some((page) => !record.text[page - 1]))
 		throw new ChatError(
 			422,
-			"One or more selected pages have no extractable text.",
+			"A selected page has no text yet. Open it and choose Read text from this page.",
 		);
 
 	const terms = [

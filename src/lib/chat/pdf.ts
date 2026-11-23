@@ -10,10 +10,23 @@ const TOOLS = [
 	"/usr/bin/pdftoppm",
 ];
 const MAX_PAGES = 200;
+const TESSDATA = "/usr/share/tesseract-ocr/5/tessdata";
 let active = 0;
 
 export function pdfAvailable(): boolean {
 	return TOOLS.every((path) => existsSync(path));
+}
+
+export function pdfOcrAvailable(): boolean {
+	return (
+		pdfAvailable() &&
+		existsSync("/usr/bin/tesseract") &&
+		existsSync(`${TESSDATA}/eng.traineddata`)
+	);
+}
+
+export function pdfPageTextLimit(count: number): number {
+	return Math.min(16_000, Math.floor(480_000 / count));
 }
 
 function runPdf(
@@ -42,6 +55,9 @@ function runPdf(
 				"--setenv",
 				"HOME",
 				"/tmp",
+				"--setenv",
+				"OMP_THREAD_LIMIT",
+				"1",
 				"--ro-bind",
 				"/usr",
 				"/usr",
@@ -69,7 +85,9 @@ function runPdf(
 					reject(
 						new ChatError(
 							422,
-							"The PDF could not be processed. Check that it opens without a password.",
+							command === "tesseract"
+								? "Local OCR could not read this page. Try a clearer scan."
+								: "The PDF could not be processed. Check that it opens without a password.",
 						),
 					);
 				else resolve(result);
@@ -91,20 +109,24 @@ export async function extractPdf(bytes: Buffer): Promise<string[]> {
 		throw new ChatError(422, "Choose a PDF with 1 to 200 pages.");
 	const text = await runPdf("pdftotext", ["-enc", "UTF-8", "-", "-"], bytes);
 	const pages = text.toString("utf8").split("\f");
-	const pageLimit = Math.min(16_000, Math.floor(480_000 / count));
+	const pageLimit = pdfPageTextLimit(count);
 	return Array.from({ length: count }, (_, i) =>
 		(pages[i] ?? "").trim().slice(0, pageLimit),
 	);
 }
 
-export function renderPdfPage(bytes: Buffer, page: number): Promise<Buffer> {
+export function renderPdfPage(
+	bytes: Buffer,
+	page: number,
+	scale = 1500,
+): Promise<Buffer> {
 	return runPdf(
 		"pdftoppm",
 		[
 			"-png",
 			"-singlefile",
 			"-scale-to",
-			"1500",
+			String(scale),
 			"-f",
 			String(page),
 			"-l",
@@ -113,4 +135,28 @@ export function renderPdfPage(bytes: Buffer, page: number): Promise<Buffer> {
 		],
 		bytes,
 	);
+}
+
+export async function recognizePdfPage(
+	bytes: Buffer,
+	page: number,
+): Promise<string> {
+	if (!pdfOcrAvailable())
+		throw new ChatError(
+			503,
+			"Local English OCR is unavailable on this server.",
+		);
+	const image = await renderPdfPage(bytes, page, 2200);
+	const result = await runPdf(
+		"tesseract",
+		["stdin", "stdout", "--tessdata-dir", TESSDATA, "-l", "eng"],
+		image,
+	);
+	const text = result.toString("utf8").replaceAll("\f", "").trim();
+	if (!text)
+		throw new ChatError(
+			422,
+			"Local OCR found no text on this page. Try a clearer scan.",
+		);
+	return text;
 }

@@ -41,6 +41,7 @@ export async function handleChatApi(
 				searchEnabled: service?.searchEnabled ?? false,
 				turnsEnabled: !!service,
 				filesEnabled: service?.files.enabled ?? false,
+				ocrEnabled: service?.files.ocrEnabled ?? false,
 				conversations:
 					(await service?.list(
 						new URL(req.url ?? root, "http://localhost").searchParams

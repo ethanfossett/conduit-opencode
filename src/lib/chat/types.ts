@@ -77,6 +77,13 @@ export interface ChatFile {
 	temporary: boolean;
 }
 
+export interface ChatPageText {
+	file: ChatFile;
+	page: number;
+	text: string;
+	source: "native" | "ocr";
+}
+
 export interface ChatFileSelection {
 	id: string;
 	pages?: number[];

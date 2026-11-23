@@ -14,7 +14,7 @@ export async function handleChatFiles(
 	const root = "/api/chat/files";
 	const upload = /^\/api\/chat\/([0-9a-f-]{36})\/files$/.exec(path)?.[1];
 	const match =
-		/^\/api\/chat\/files\/([0-9a-f-]{36})(?:\/(download|page\/(\d+)))?$/.exec(
+		/^\/api\/chat\/files\/([0-9a-f-]{36})(?:\/(download|page\/(\d+)(\/text)?))?$/.exec(
 			path,
 		);
 	if (!upload && path !== root && !path.startsWith(`${root}/`)) return false;
@@ -48,7 +48,7 @@ export async function handleChatFiles(
 				"X-Content-Type-Options": "nosniff",
 			});
 			res.end(bytes);
-		} else if (id && match?.[3]) {
+		} else if (id && match?.[3] && !match[4]) {
 			const image = await service.files.page(id, Number(match[3]));
 			res.writeHead(200, {
 				"Content-Type": "image/png",
@@ -65,6 +65,13 @@ export async function handleChatFiles(
 
 	if (req.headers["x-conduit-chat"] !== "1")
 		throw new ChatError(403, "Chat request header required.");
+	if (id && match?.[3] && match[4] && req.method === "POST") {
+		const chatId = url.searchParams.get("chat") ?? undefined;
+		if (chatId !== undefined && !/^[a-f0-9-]{36}$/.test(chatId))
+			throw new ChatError(400, "Invalid conversation.");
+		respond(res, 200, await service.readPdfText(id, Number(match[3]), chatId));
+		return true;
+	}
 	if (upload && req.method === "POST") {
 		if (req.headers["content-type"]?.split(";")[0] !== "application/pdf")
 			throw new ChatError(415, "Choose a PDF to upload.");

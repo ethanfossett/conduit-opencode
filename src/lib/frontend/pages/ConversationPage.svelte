@@ -44,6 +44,7 @@
 	let text = $state("");
 	let attachments = $state<ChatAttachment[]>([]);
 	let filesEnabled = $state(false);
+	let ocrEnabled = $state(false);
 	let pdfDraft = $state<DraftPdf[]>([]);
 	let filesOpen = $state(false);
 	let filesBusy = $state(false);
@@ -94,11 +95,12 @@
 	}
 
 	async function refresh(query = appliedInboxQuery) {
-		const result = await api<{enabled: boolean; searchEnabled: boolean; turnsEnabled?: boolean; filesEnabled?: boolean; conversations: ChatSummary[]}>(query ? `?q=${encodeURIComponent(query)}` : "");
+		const result = await api<{enabled: boolean; searchEnabled: boolean; turnsEnabled?: boolean; filesEnabled?: boolean; ocrEnabled?: boolean; conversations: ChatSummary[]}>(query ? `?q=${encodeURIComponent(query)}` : "");
 		enabled = result.enabled;
 		searchEnabled = result.searchEnabled;
 		turnsEnabled = result.turnsEnabled ?? false;
 		filesEnabled = result.filesEnabled ?? false;
+		ocrEnabled = result.ocrEnabled ?? false;
 		conversations = result.conversations;
 		appliedInboxQuery = query;
 	}
@@ -871,7 +873,7 @@
 </div>
 
 {#if filesOpen}
-	<ChatFilesPanel chatId={chat?.id} temporary={chat?.temporary ?? false} selected={pdfDraft} initialPage={pdfPreview}
+	<ChatFilesPanel chatId={chat?.id} temporary={chat?.temporary ?? false} {ocrEnabled} selected={pdfDraft} initialPage={pdfPreview}
 		onChange={setPdfDraft} onClose={() => (filesOpen = false)} onBusy={(active) => (filesBusy = active)}
 		onDeleted={() => { if (chat) void reconcile(chat.id); }} />
 {/if}
