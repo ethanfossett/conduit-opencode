@@ -1,7 +1,10 @@
 <script lang="ts">
 	import { onMount, tick } from "svelte";
-	import type { ChatAttachment, ChatConversation } from "../../chat/types.js";
+	import type { ChatAttachment, ChatConversation, ChatSearchResult } from "../../chat/types.js";
 	import { clearAcceptedDraft, draftKey, loadDraft, saveDraft } from "../utils/drafts.js";
+	import { renderMarkdown } from "../utils/markdown.js";
+	import { stageChatHandoff } from "../stores/chat-handoff.svelte.js";
+	import type { ProjectsListResponse } from "../../shared-types.js";
 	import { navigate } from "../stores/router.svelte.js";
 
 	type Summary = Pick<ChatConversation, "id" | "title" | "updatedAt">;
@@ -10,11 +13,24 @@
 	let text = $state("");
 	let attachments = $state<ChatAttachment[]>([]);
 	let enabled = $state(false);
+	let handoffText = $state("");
+	let handoffProject = $state("");
+	let handoffProjects = $state<{ slug: string; title: string }[]>([]);
+	let showHandoff = $state(false);
+	let searchEnabled = $state(false);
+	let showSearch = $state(false);
+	let searchQuery = $state("");
+	let searchResult = $state<ChatSearchResult | null>(null);
+	let includeSources = $state(false);
 	let loading = $state(true);
 	let busy = $state(false);
 	let error = $state("");
 	let scroll: HTMLElement;
 	let confirmDelete = $state(false);
+	const chatMarkdown = {
+		ALLOWED_TAGS: ["p", "h1", "h2", "h3", "h4", "blockquote", "br", "pre", "code", "strong", "em", "del", "ol", "ul", "li", "table", "thead", "tbody", "tr", "td", "th", "div", "hr"],
+		ALLOWED_ATTR: ["class", "start"],
+	};
 	const storageKey = $derived(chat && !chat.temporary ? draftKey("conversation", chat.id) : null);
 
 	async function api<T>(path = "", method = "GET", data?: unknown): Promise<T> {
@@ -33,8 +49,9 @@
 	}
 
 	async function refresh() {
-		const result = await api<{enabled: boolean; conversations: Summary[]}>();
+		const result = await api<{enabled: boolean; searchEnabled: boolean; conversations: Summary[]}>();
 		enabled = result.enabled;
+		searchEnabled = result.searchEnabled;
 		conversations = result.conversations;
 	}
 
@@ -43,10 +60,18 @@
 		text = conversation && !conversation.temporary ? loadDraft(draftKey("conversation", conversation.id)) : "";
 		attachments = [];
 		confirmDelete = false;
+		resetSearch();
+		closeHandoff();
 		const url = new URL(window.location.href);
 		if (conversation && !conversation.temporary) url.searchParams.set("c", conversation.id);
 		else url.searchParams.delete("c");
 		window.history.replaceState(null, "", url);
+		void scrollToLatest();
+	}
+
+	async function scrollToLatest() {
+		await tick();
+		scroll?.scrollTo({ top: scroll.scrollHeight });
 	}
 
 	async function run(action: () => Promise<void>) {
@@ -99,25 +124,87 @@
 		});
 	}
 
+	function resetSearch() {
+		showSearch = false;
+		searchQuery = "";
+		searchResult = null;
+		includeSources = false;
+	}
+
+	function search(event: SubmitEvent) {
+		event.preventDefault();
+		const conversation = chat;
+		const query = searchQuery.trim();
+		if (!conversation || !query) return;
+		void run(async () => {
+			includeSources = false;
+			searchResult = null;
+			searchResult = await api<ChatSearchResult>(`/${conversation.id}/search`, "POST", { query });
+		});
+	}
+
+	function readSource(index: number) {
+		const conversation = chat;
+		const result = searchResult;
+		if (!conversation || !result) return;
+		void run(async () => {
+			searchResult = await api<ChatSearchResult>(`/${conversation.id}/search/read`, "POST", {
+				searchId: result.id,
+				index,
+			});
+			includeSources = false;
+		});
+	}
+
+	function prepareHandoff(excerpt: string) {
+		void run(async () => {
+			const response = await fetch("/api/projects");
+			if (!response.ok) throw new Error("Could not load Code projects.");
+			const { projects } = await response.json() as ProjectsListResponse;
+			handoffProjects = projects
+				.filter(({ status }) => status === "ready")
+				.map(({ slug, title }) => ({ slug, title }));
+			handoffProject = handoffProjects.length === 1 ? handoffProjects[0]?.slug ?? "" : "";
+			handoffText = excerpt.slice(0, 12_000);
+			showHandoff = true;
+		});
+	}
+
+	function closeHandoff() {
+		showHandoff = false;
+		handoffText = "";
+		handoffProject = "";
+		handoffProjects = [];
+	}
+
+	function openCode(event: SubmitEvent) {
+		event.preventDefault();
+		const reviewed = handoffText.trim();
+		if (!reviewed || !handoffProjects.some(({ slug }) => slug === handoffProject)) return;
+		stageChatHandoff(handoffProject, reviewed);
+		navigate(`/p/${encodeURIComponent(handoffProject)}/`);
+	}
+
 	function send(event: SubmitEvent) {
 		event.preventDefault();
 		const conversation = chat;
 		const prompt = text.trim();
-		if (!conversation || !prompt || busy) return;
+		if (!conversation || !prompt || busy || showHandoff) return;
 		const submitted = text;
 		const draft = storageKey;
 		void run(async () => {
 			const result = await api<ChatConversation>(`/${conversation.id}`, "POST", {
 				text: prompt,
 				...(attachments.length ? { attachments } : {}),
+				...(includeSources && searchResult && { searchId: searchResult.id }),
 			});
 			chat = result;
 			if (draft) clearAcceptedDraft(draft, submitted);
 			text = "";
 			attachments = [];
+			resetSearch();
 			if (!result.temporary) await refresh();
-			await tick();
-			scroll?.scrollTo({ top: scroll.scrollHeight });
+			await scrollToLatest();
 		});
 	}
 </script>
@@ -170,16 +257,83 @@
 					<div bind:this={scroll} class="min-h-0 flex-1 overflow-auto px-4 py-5" role="log" aria-label="Messages">
 						<div class="mx-auto max-w-2xl space-y-5">
 							{#each chat.messages as message}
-								<div class="whitespace-pre-wrap break-words rounded-xl px-4 py-3 text-sm" class:bg-bg-alt={message.role === "user"}>
-									<span class="mb-1 block text-xs font-medium text-text-muted">{message.role === "user" ? "You" : "Cyber v1"}</span>{message.text}
+								<div class="break-words rounded-xl px-4 py-3 text-sm" class:bg-bg-alt={message.role === "user"}>
+									<span class="mb-1 block text-xs font-medium text-text-muted">{message.role === "user" ? "You" : "Cyber v1"}</span>
+									{#if message.role === "assistant"}
+										<div class="md-content text-sm leading-relaxed">{@html renderMarkdown(message.text, chatMarkdown)}</div>
+									{:else}
+										<p class="whitespace-pre-wrap">{message.text}</p>
+									{/if}
 									{#each message.attachments ?? [] as file}
 										<span class="mt-1 block text-xs text-text-muted">Attachment · {file.name}</span>
 									{/each}
+									{#if message.sourceContext}
+										<ol class="mt-2 space-y-1 text-xs text-text-muted" aria-label="Web sources">
+											{#each message.sourceContext.sources as source, index}
+												<li>[{index + 1}] <a class="underline" href={source.url} target="_blank" rel="noreferrer noopener">{source.title || new URL(source.url).hostname}</a></li>
+											{/each}
+										</ol>
+									{/if}
+									<button type="button" class="mt-2 text-xs text-text-muted underline" disabled={busy} onclick={() => prepareHandoff(message.text)}>Continue in Code</button>
 								</div>
 							{/each}
 							{#if busy}<p class="text-sm text-text-muted">Working…</p>{/if}
 						</div>
 					</div>
+					{#if showHandoff}
+						<form class="mx-auto max-h-[40dvh] w-full max-w-2xl space-y-2 overflow-auto border-t border-border p-4 text-sm" aria-label="Continue in Code" onsubmit={openCode}>
+							<label class="block font-medium" for="handoff-excerpt">Review text for Code</label>
+							<p class="text-xs text-text-muted">Only the text below becomes a saved Code draft. You decide when to send it.</p>
+							<textarea id="handoff-excerpt" rows="3" maxlength="12000" bind:value={handoffText} class="w-full rounded border border-border bg-bg-surface p-2 text-base"></textarea>
+							<div class="flex flex-wrap items-center gap-2">
+								<label for="handoff-project" class="sr-only">Code project</label>
+								<select id="handoff-project" bind:value={handoffProject} class="min-w-0 rounded border border-border bg-bg-surface p-2 text-base">
+									<option value="">{handoffProjects.length ? "Choose Code project" : "No ready Code projects"}</option>
+									{#each handoffProjects as project (project.slug)}
+										<option value={project.slug}>{project.title || project.slug}</option>
+									{/each}
+								</select>
+								<button type="submit" class="rounded bg-accent px-3 py-2 text-bg disabled:opacity-50" disabled={!handoffText.trim() || !handoffProject}>Open Code project</button>
+								<button type="button" class="underline" onclick={closeHandoff}>Cancel</button>
+							</div>
+						</form>
+					{:else if showSearch}
+						<section class="mx-auto max-h-[35dvh] w-full max-w-2xl space-y-3 overflow-auto border-t border-border p-4 text-sm" aria-label="Private web search">
+							<form class="space-y-2" onsubmit={search}>
+								<label class="block font-medium" for="search-query">Review your web query</label>
+								<p class="text-xs text-text-muted">Brave Search receives this query through Mullvad. Search starts when you select Run search.</p>
+								<div class="flex flex-wrap gap-2">
+									<input id="search-query" class="min-w-0 flex-1 rounded border border-border bg-bg-surface p-2 text-base" bind:value={searchQuery} maxlength="400" disabled={busy} />
+									<button type="submit" class="rounded bg-accent px-3 py-2 text-bg disabled:opacity-50" disabled={busy || !searchQuery.trim()}>Run search</button>
+									<button type="button" disabled={busy} class="underline" onclick={resetSearch}>Close</button>
+								</div>
+							</form>
+							{#if searchResult}
+								{#if searchResult.sources.length === 0}
+									<p class="text-text-muted">No sources found for this query.</p>
+								{:else}
+									<ol class="space-y-3">
+										{#each searchResult.sources as source, index}
+											<li>
+												<p class="font-medium">[{index + 1}] {source.title || new URL(source.url).hostname}</p>
+												<p class="text-xs text-text-muted">{new URL(source.url).hostname}</p>
+												<p class="break-words">{source.snippet}</p>
+												{#if source.excerpt}
+													<details><summary class="cursor-pointer underline">Page excerpt</summary><p class="break-words">{source.excerpt}</p></details>
+												{:else}
+													<button type="button" class="text-xs underline" disabled={busy} onclick={() => readSource(index)}>Read excerpt through Mullvad</button>
+												{/if}
+											</li>
+										{/each}
+									</ol>
+									<label class="flex items-start gap-2">
+										<input type="checkbox" bind:checked={includeSources} disabled={busy} />
+										<span>Send these sources and excerpts to NodeCode with my next message</span>
+									</label>
+								{/if}
+							{/if}
+						</section>
+					{/if}
 					<form class="mx-auto w-full max-w-2xl space-y-2 p-4" onsubmit={send}>
 						<label class="sr-only" for="chat-message">Message</label>
 						<textarea id="chat-message" placeholder="Message Cyber v1" maxlength="24000" rows="3" disabled={busy} bind:value={text} oninput={(event) => {
@@ -194,7 +348,13 @@
 						{/if}
 						<div class="flex items-center justify-between gap-2 text-sm">
 							<label class="cursor-pointer text-text-muted underline">Attach text files<input type="file" accept="text/*,.md,.json,.csv,.log" multiple disabled={busy} onchange={attach} class="sr-only" /></label>
-							<button type="submit" disabled={busy || !text.trim()} class="rounded-lg bg-accent px-4 py-2 text-bg disabled:opacity-50">Send</button>
+							{#if searchEnabled}
+								<button type="button" class="text-text-muted underline" disabled={busy} aria-expanded={showSearch} onclick={() => {
+									if (showSearch) resetSearch();
+									else showSearch = true;
+								}}>Web search</button>
+							{/if}
+							<button type="submit" disabled={busy || showHandoff || !text.trim()} class="rounded-lg bg-accent px-4 py-2 text-bg disabled:opacity-50">Send</button>
 						</div>
 						<p class="text-xs text-text-muted">NodeCode receives the message, recent context, and any files you attach.</p>
 					</form>

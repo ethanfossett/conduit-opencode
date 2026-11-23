@@ -19,23 +19,28 @@ export async function handleChatApi(
 ) {
 	try {
 		const root = "/api/chat";
-		const id = /^\/api\/chat\/([0-9a-f-]{36})$/.exec(path)?.[1];
+		const match = /^\/api\/chat\/([0-9a-f-]{36})(\/search(?:\/read)?)?$/.exec(
+			path,
+		);
+		const id = match?.[1];
+		const search = !!match?.[2];
 		if (path !== root && !id)
 			throw new ChatError(404, "Unknown Chat operation.");
 		if (path === root && req.method === "GET") {
 			respond(res, 200, {
 				enabled: !!service,
+				searchEnabled: service?.searchEnabled ?? false,
 				conversations: (await service?.list()) ?? [],
 			});
 			return;
 		}
 		if (!service)
 			throw new ChatError(503, "Chat needs a dedicated OpenCode instance.");
-		if (req.method === "GET" && id) {
+		if (req.method === "GET" && id && !search) {
 			respond(res, 200, await service.get(id));
 			return;
 		}
-		if (req.method === "DELETE" && id) {
+		if (req.method === "DELETE" && id && !search) {
 			if (req.headers["x-conduit-chat"] !== "1")
 				throw new ChatError(403, "Chat request header required.");
 			await service.remove(id);
@@ -60,6 +65,31 @@ export async function handleChatApi(
 		} catch {
 			throw new ChatError(400, "Invalid Chat request body.");
 		}
+		if (search && id) {
+			if (match?.[2] === "/search/read") {
+				const searchId = body["searchId"];
+				const index = body["index"];
+				if (
+					Object.keys(body).length !== 2 ||
+					typeof searchId !== "string" ||
+					typeof index !== "number" ||
+					!Number.isInteger(index) ||
+					index < 0 ||
+					index >= 5
+				) {
+					throw new ChatError(400, "Choose a source from the current search.");
+				}
+				respond(res, 200, await service.readSource(id, searchId, index));
+				return;
+			}
+			if (
+				Object.keys(body).some((key) => key !== "query") ||
+				typeof body["query"] !== "string"
+			)
+				throw new ChatError(400, "Chat search accepts one reviewed query.");
+			respond(res, 200, await service.lookup(id, body["query"]));
+			return;
+		}
 		if (!id) {
 			if (
 				Object.keys(body).some((key) => key !== "temporary") ||
@@ -72,9 +102,10 @@ export async function handleChatApi(
 		}
 		if (
 			Object.keys(body).some(
-				(key) => key !== "text" && key !== "attachments",
+				(key) => key !== "text" && key !== "attachments" && key !== "searchId",
 			) ||
-			typeof body["text"] !== "string"
+			typeof body["text"] !== "string" ||
+			(body["searchId"] !== undefined && typeof body["searchId"] !== "string")
 		) {
 			throw new ChatError(400, "Chat accepts a text message.");
 		}
@@ -85,6 +116,7 @@ export async function handleChatApi(
 				id,
 				body["text"],
 				readAttachments(body["attachments"]),
+				body["searchId"],
 			),
 		);
 	} catch (err) {

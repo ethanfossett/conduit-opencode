@@ -2,7 +2,7 @@
 // Renders markdown to sanitized HTML using marked + DOMPurify (npm packages).
 // highlight.js and mermaid are handled post-render by components.
 
-import DOMPurify from "dompurify";
+import DOMPurify, { type Config } from "dompurify";
 import { marked, Renderer } from "marked";
 
 // Configure marked: GFM enabled, no automatic line breaks.
@@ -31,7 +31,7 @@ marked.use({
  * Render markdown text to sanitized HTML.
  * Uses marked for parsing and DOMPurify for XSS prevention.
  */
-export function renderMarkdown(text: string): string {
+export function renderMarkdown(text: string, config?: Config): string {
 	const html = marked.parse(text, { async: false }) as string;
-	return DOMPurify.sanitize(html);
+	return DOMPurify.sanitize(html, config);
 }

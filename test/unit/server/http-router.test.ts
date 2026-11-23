@@ -11,8 +11,9 @@ import {
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthManager } from "../../../src/lib/auth.js";
+import { ChatSearch } from "../../../src/lib/chat/search.js";
 import { ChatService } from "../../../src/lib/chat/service.js";
 import {
 	MIME_TYPES,
@@ -945,6 +946,104 @@ describe("projectless Chat", () => {
 			expect(
 				statSync(join(chatDirectory, `${persisted.id}.json`)).mode & 0o777,
 			).toBe(0o600);
+		} finally {
+			await app.stop();
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("Chat private search", () => {
+	it("isolates reviewed queries and attaches source context only on an explicit send", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "conduit-search-"));
+		const lookup = vi.fn(async (_query: string) => [
+			{
+				title: "Source",
+				url: "https://example.org/",
+				snippet: "Indexed snippet",
+			},
+		]);
+		const read = vi.fn(async (_url: string) => "Page excerpt");
+		const generate = vi.fn(async (_prompt: string) => "Reply");
+		const chat = new ChatService(
+			directory,
+			generate,
+			new ChatSearch(lookup, read),
+		);
+		const app = createTestServer({ chat });
+		await app.start();
+		try {
+			const post = (path: string, data: unknown) =>
+				fetch(app.url(path), {
+					method: "POST",
+					headers: {
+						"X-Conduit-Chat": "1",
+						"Content-Type": "application/json",
+					},
+					body: JSON.stringify(data),
+				});
+			const current = `/api/chat/${(await chat.create(true)).id}`;
+			const other = `/api/chat/${(await chat.create(true)).id}`;
+			expect(
+				(
+					await post(`${current}/search`, {
+						query: "public topic",
+						text: "private draft",
+					})
+				).status,
+			).toBe(400);
+			expect(lookup).not.toHaveBeenCalled();
+
+			const response = await post(`${current}/search`, {
+				query: "public topic",
+			});
+			expect(response.status).toBe(200);
+			expect(lookup).toHaveBeenCalledExactlyOnceWith("public topic");
+			expect(generate).not.toHaveBeenCalled();
+			const result = await response.json();
+			expect(
+				(await post(`${other}/search/read`, { searchId: result.id, index: 0 }))
+					.status,
+			).toBe(409);
+			expect(
+				(await post(`${current}/search/read`, { url: "https://example.org/" }))
+					.status,
+			).toBe(400);
+			expect(read).not.toHaveBeenCalled();
+			expect(
+				(
+					await post(`${current}/search/read`, {
+						searchId: result.id,
+						index: 0,
+					})
+				).status,
+			).toBe(200);
+			expect(read).toHaveBeenCalledExactlyOnceWith("https://example.org/");
+
+			expect((await post(current, { text: "ordinary question" })).status).toBe(
+				200,
+			);
+			expect(generate.mock.calls[0]?.[0]).not.toContain("Indexed snippet");
+			expect(
+				(await post(other, { text: "cross-chat", searchId: result.id })).status,
+			).toBe(409);
+			expect(
+				(await post(current, { text: "use sources", searchId: result.id }))
+					.status,
+			).toBe(200);
+			expect(generate.mock.calls[1]?.[0]).toContain("Page excerpt");
+			expect(
+				(await post(current, { text: "reuse sources", searchId: result.id }))
+					.status,
+			).toBe(409);
+
+			lookup.mockRejectedValueOnce(new Error("test tunnel failure"));
+			expect(
+				(await post(`${other}/search`, { query: "another query" })).status,
+			).toBe(503);
+			expect(
+				(await post(other, { text: "ordinary chat after outage" })).status,
+			).toBe(200);
 		} finally {
 			await app.stop();
 			rmSync(directory, { recursive: true, force: true });

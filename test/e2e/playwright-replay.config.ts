@@ -11,6 +11,7 @@ export default defineConfig({
 	testMatch: [
 		"chat.spec.ts",
 		"client-recovery.spec.ts",
+		"conversation.spec.ts",
 		"chat-lifecycle.spec.ts",
 		"permissions.spec.ts",
 		"advanced-ui.spec.ts",
@@ -65,7 +66,11 @@ export default defineConfig({
 		},
 		{
 			name: "mobile",
-			testMatch: ["client-recovery.spec.ts", "terminal.spec.ts"],
+			testMatch: [
+				"client-recovery.spec.ts",
+				"conversation.spec.ts",
+				"terminal.spec.ts",
+			],
 			use: {
 				viewport: { width: 390, height: 844 },
 				isMobile: true,

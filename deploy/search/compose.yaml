@@ -1,0 +1,33 @@
+services:
+  mullvad:
+    image: docker.io/qmcgaw/gluetun:v3.41.0
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      VPN_SERVICE_PROVIDER: mullvad
+      VPN_TYPE: wireguard
+      FIREWALL: "on"
+      FIREWALL_INPUT_PORTS: "8754"
+      # No outbound subnet exceptions. The worker ignores system DNS.
+    volumes:
+      - "${CONDUIT_MULLVAD_WIREGUARD_FILE:?Set an absolute private WireGuard config path}:/gluetun/wireguard/wg0.conf:ro"
+    ports:
+      - "127.0.0.1:${CONDUIT_SEARCH_PORT:-8754}:8754"
+    restart: unless-stopped
+  worker:
+    build: .
+    network_mode: service:mullvad
+    depends_on:
+      mullvad:
+        condition: service_healthy
+    env_file:
+      - "${CONDUIT_SEARCH_ENV_FILE:?Set an absolute protected worker env file path}"
+    environment:
+      CONDUIT_CHAT_SEARCH_BIND: "0.0.0.0"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped

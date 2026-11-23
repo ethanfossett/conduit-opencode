@@ -1,16 +1,19 @@
 {
-  "model": "nodecode/nodecode-cyber-v1",
-  "update": "disable",
-  "share": "disabled",
-  "permissions": { "*": "deny" },
-  "websearch": false,
-  "providers": {
-    "nodecode": {
-      "name": "NodeCode",
-      "env": ["NODECODE_API_KEY"],
-      "package": "@opencode/ai/providers/openai-compatible",
-      "settings": { "baseURL": "https://api.nodecode.ai/v1" },
-      "models": { "nodecode-cyber-v1": { "name": "Cyber v1" } }
-    }
-  }
+	"model": "nodecode/nodecode-cyber-v1",
+	"update": "disable",
+	"share": "disabled",
+	"permissions": { "*": "deny" },
+	"websearch": false,
+	"providers": {
+		"nodecode": {
+			"name": "NodeCode",
+			"env": ["NODECODE_API_KEY"],
+			"package": "@opencode/ai/providers/openai-compatible",
+			"settings": {
+				"baseURL": "https://api.nodecode.ai:8443/v1",
+				"apiKey": "{env:NODECODE_API_KEY}"
+			},
+			"models": { "nodecode-cyber-v1": { "name": "Cyber v1" } }
+		}
+	}
 }

@@ -333,6 +333,7 @@ export class RequestRouter {
 				(pathname === "/chat" || pathname === "/chat/") &&
 				req.method === "GET"
 			) {
+				res.setHeader("X-DNS-Prefetch-Control", "off");
 				await this.serveStaticFile(res, "index.html");
 				return;
 			}

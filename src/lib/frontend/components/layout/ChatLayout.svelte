@@ -44,11 +44,13 @@
 		clearNavigateToSession,
 		initSWNavigationListener,
 		wsSend,
+		getIsConnected,
 	} from "../../stores/ws.svelte.js";
+	import { chatHandoff, clearChatHandoff, recordChatHandoffRequest } from "../../stores/chat-handoff.svelte.js";
 	import { slugState } from "../../stores/router.svelte.js";
 	import { chatState, clearMessages } from "../../stores/chat.svelte.js";
 	import { terminalState, destroyAll } from "../../stores/terminal.svelte.js";
-	import { sessionState, clearSessionState, switchToSession } from "../../stores/session.svelte.js";
+	import { sessionState, clearSessionState, switchToSession, sessionCreation, sendNewSession } from "../../stores/session.svelte.js";
 	import { clearAllPermissions } from "../../stores/permissions.svelte.js";
 	import { clearDiscoveryState } from "../../stores/discovery.svelte.js";
 	import { todoState, clearTodoState } from "../../stores/todo.svelte.js";
@@ -73,6 +75,13 @@
 	let settingsInitialTab = $state("notifications");
 	let debugPanelVisible = $state(false);
 	let vcsPanelVisible = $state(false);
+	const handoff = $derived(chatHandoff.pending?.project === slugState.current ? chatHandoff.pending : null);
+
+	function createHandoffSession() {
+		if (!handoff || !getIsConnected()) return;
+		const requestId = sendNewSession(wsSend);
+		if (requestId) recordChatHandoffRequest(handoff.project, requestId);
+	}
 
 	// ─── Terminal resize state ─────────────────────────────────────────────
 
@@ -502,6 +511,16 @@
 	>
 		<!-- Header -->
 		<Header />
+		{#if handoff}
+			<section class="flex flex-wrap items-center gap-3 border-b border-border bg-bg-surface px-4 py-3 text-sm" aria-label="Draft from Chat">
+				<span class="flex-1">Create a Code session with the draft you reviewed in Chat.</span>
+				{#if sessionCreation.value.phase === "error"}
+					<span role="alert" class="text-error">{sessionCreation.value.message}</span>
+				{/if}
+				<button type="button" class="rounded bg-accent px-3 py-2 text-bg disabled:opacity-50" disabled={!getIsConnected() || sessionCreation.value.phase !== "idle"} onclick={createHandoffSession}>Create session with draft</button>
+				<button type="button" class="underline" disabled={sessionCreation.value.phase === "creating"} onclick={clearChatHandoff}>Discard draft</button>
+			</section>
+		{/if}
 
 		<!-- Connection Overlay -->
 		<ConnectOverlay />

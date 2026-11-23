@@ -1,4 +1,5 @@
 import { handleSubmissionResult } from "./submissions.svelte.js";
+
 // ─── WebSocket Message Dispatch ──────────────────────────────────────────────
 // Extracted from ws.svelte.ts — centralized message routing and event replay.
 // Pure dispatch table: routes incoming RelayMessage to the appropriate store.
@@ -46,6 +47,7 @@ import {
 	renderDeferredMarkdown,
 	seedRegistryFromMessages,
 } from "./chat.svelte.js";
+import { completeChatHandoff } from "./chat-handoff.svelte.js";
 import { handleCredentialList } from "./credentials.svelte.js";
 import {
 	handleAgentInfo,
@@ -456,10 +458,11 @@ export function handleMessage(msg: RelayMessage): void {
 			// prevent stale IDs from leaking into future server-initiated switches.
 			const previousSessionId =
 				consumeSwitchingFromId() ?? sessionState.currentId;
+			const slug = getCurrentSlug();
+			if (msg.id) completeChatHandoff(slug, msg.requestId, msg.id);
 			handleSessionSwitched(msg);
 
 			// Update URL to reflect the new session
-			const slug = getCurrentSlug();
 			if (slug && msg.id) replaceRoute(`/p/${slug}/s/${msg.id}`);
 
 			// Idempotent — switchToSession() already cleared optimistically,

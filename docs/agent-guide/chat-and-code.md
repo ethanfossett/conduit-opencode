@@ -1,29 +1,29 @@
 # Chat and Code roadmap
 
-Conduit will have a conversation inbox for general chat and a separate workspace for coding. Both surfaces can use OpenCode's session and streaming APIs. The current milestone lands NodeCode onboarding and verifies the existing session flow before building the new UI.
+Conduit has a projectless conversation inbox for general Chat and a separate workspace for Code. Code uses OpenCode sessions and streaming. Chat uses a dedicated OpenCode runtime and stateless text generation for tool isolation.
 
-## Current milestone
+## NodeCode onboarding
 
 - **Settings → Integrations → NodeCode** connects a regular key through OpenCode, reports the connected server version, and distinguishes a saved credential from an available model and a successful response.
 - The NodeCode card uses the project-scoped integration catalog. A live server can list a custom integration while the single-integration endpoint returns 404, so the card uses the catalog for discovery.
 - **Test connection** sends a single short generation request that can use account credit. **New chat with Cyber v1** uses OpenCode's session creation model field. The model belongs to the new session.
 - Read [architecture](architecture.md) and [testing](testing.md) before changing the relay. Start with `src/lib/handlers/nodecode.ts`, `src/lib/nodecode.ts`, and `src/lib/frontend/components/overlays/NodecodeCard.svelte`. The other provider and session controls continue to use the shared client in `src/lib/instance/opencode-client.ts`.
 
-## Next work, in order
+## Milestones and release checks
 
-| Work item | Scope | Acceptance |
+| Work item | Implementation | Verification |
 | --- | --- | --- |
-| Close the preview milestone | Run the branch on an authenticated private preview with a compatible OpenCode V2 server and an existing NodeCode credential. | From a physical iPhone, run the connection test, open a Cyber v1 chat, send a short message, reopen the PWA, and verify the model and reply persisted. Record the server version and outcome. |
-| Prove the Chat boundary | Start a separate OpenCode instance for Chat with a dedicated state directory and an empty workspace. Restrict its filesystem and network access at the process boundary. Explicitly disable shell, file, plugin, and delegated tools. Give the browser a Chat-specific relay surface that accepts only chat lifecycle, model selection, and prompt operations. | A direct API or WebSocket call cannot use Chat to invoke a terminal, list project files, change tool policy, or access a Code session by ID. The runtime cannot read the Code workspace or credentials. Test reconnects and make sure Code remains usable. |
-| Ship the conversation interface | Add a projectless Chat route and a Chat/Code switch. Reuse composer, streaming, and drafts. Scope draft and session caches by mode. Keep explicit attachments on the Chat input path. | Creating a chat requires neither a project nor new setup. Chat history and drafts stay distinct after a reload, and the Code flow still passes its regression tests. |
-| Add private web search | Add a deliberate composer action that sends a reviewed query to a dedicated search worker. The worker owns search and page fetches. It uses a dedicated Mullvad WireGuard connection for IPv4, IPv6 if enabled, and DNS. Block all alternate egress. Return source URLs and bounded plain-text excerpts, with no project credentials or ambient cookies. | Verify exit IP and DNS from inside the worker. Bring the tunnel down and verify search and page reads stop while normal chat and Tailscale stay reachable. Reject private-address fetches, unsafe redirects, and oversized responses. Display citations and label externally sourced text as data. |
-| Add temporary chat and a Code handoff | Define retention and deletion across the relay and OpenCode. Add an explicit preview for copying selected conversation content into a Code session. | Temporary sessions obey the stated retention after refresh and server restart. Code receives only approved content. |
+| NodeCode preview | Provider Setup and Code session model selection | Existing account inference and restored session in the local browser preview. Physical iPhone PWA check pending. |
+| Chat isolation | Dedicated model runtime, private home, separate network namespace with a fixed TLS bridge, authenticated relay routes | Relay routing and storage tests, plus live tool-free NodeCode generation in the isolated runtime. |
+| Chat inbox and temporary mode | Projectless routes, conversation history, text drafts and attachments, memory-only temporary chats | Desktop and mobile browser workflows and relay storage tests. |
+| Private search | Explicit query review, isolated Mullvad worker, reviewed snippets and page excerpts, citations | Worker and relay regressions, browser replay, and live fail-closed preview with the VPN disconnected. Successful Mullvad/Brave egress still requires active service credentials. |
+| Code handoff | Review and edit one message, select a Code project, and create an unsent Code draft | Desktop and mobile browser replay creates a Code session, verifies the edited draft survives reload and detects any automatic send. |
 
 ## Privacy and release boundaries
 
-- Tailscale is the route from the phone to Conduit. Mullvad is the proposed route from the search worker to the web.
+- Tailscale is the route from the phone to Conduit. Mullvad is the route from the search worker to the web.
 - A hosted model receives the prompt and any excerpts supplied for the answer. A search provider can see the query and any search account identifier. Keep those distinctions visible in the product.
-- Keep search disabled until the worker can prove its restricted egress. Pick the search backend during the search milestone. Use an existing account or an approved provider before introducing per-query costs.
+- Keep search disabled until the worker can prove its restricted egress. Use an existing Brave Search credential to enable search.
 - Keep machine-specific configs, account keys, saved conversations, and private preview addresses outside this public repository. Keep each milestone independently reviewable.
 
 ## Verification
@@ -34,18 +34,41 @@ Run `pnpm check`, `pnpm lint`, `pnpm test:unit`, and `pnpm build` from this chec
 
 - Live loopback preview against OpenCode 2.3.2. The NodeCode card found an existing connection and the short inference test succeeded.
 - A mobile-sized Chromium session created a new Cyber v1 chat, received a real streamed response, and restored the conversation after reload. Physical iPhone acceptance is still outstanding.
-- The current branch passed 4,247 unit tests and both targeted desktop and mobile browser tests, plus type checking, lint and a production build.
+- The isolated Chat runtime replied through the existing NodeCode account in a mobile-sized Chromium preview. The same preview verified search failed closed with Mullvad disconnected and a temporary transcript was absent after reload and on disk.
 
 ## Running the projectless Chat preview
 
 The **Chat** link opens `/chat`. Conversations have their own authenticated HTTP routes and inbox. A dedicated OpenCode 2.x runtime performs a single stateless, tool-free text generation per turn. It uses the NodeCode Cyber v1 model and receives the recent transcript plus any explicitly attached plain text. OpenCode currently returns a complete reply from this tool-free endpoint. Code sessions continue to use their existing streaming path.
 
-1. On Linux, install Bubblewrap and use the OpenCode 2.x binary already available to the relay. Give the Chat runtime its own server password. Store the password and the regular NodeCode key in a protected environment file outside the checkout.
+1. On Linux, install Bubblewrap and socat, then use the OpenCode 2.x binary already available to the relay. Give the Chat runtime its own server password. Store the password and the regular NodeCode key in a protected environment file outside the checkout.
 2. Run `deploy/chat/run-opencode.sh` with `NODECODE_API_KEY` and `CONDUIT_CHAT_OPENCODE_PASSWORD` loaded into its environment. By default, the launcher binds port 4097, starts in an empty workspace, mounts a fresh home in memory, and passes only its dedicated provider and server credentials. Pin the OpenCode binary with `CONDUIT_CHAT_OPENCODE_BINARY` if needed.
 3. Set `CONDUIT_CHAT_OPENCODE_URL=http://127.0.0.1:4097` and the matching `CONDUIT_CHAT_OPENCODE_PASSWORD` in the Conduit process environment, then start the relay. Keep the Chat runtime's port out of the Code registry, public proxy, and Tailscale Serve configuration.
 
-The sandbox shares the host network for provider HTTPS and relay loopback. It mounts system executables and certificate/DNS configuration, with no host home or project mounts. Keep Code's local server authenticated with separate credentials. The relay accepts no project, command, permission, or tool fields on Chat routes and refuses generation if a Code instance claims the configured Chat port.
+The launcher uses an isolated Linux network namespace. Its only egress bridge forwards TLS connections to `api.nodecode.ai:443`. The runtime verifies the provider certificate. The only ingress is the dedicated loopback port via a private socket. The sandbox mounts system executables and certificate trust, plus an in-memory home and an empty workspace. Keep Code authenticated with separate credentials. The relay accepts no project, command, permission, or tool fields on Chat routes and refuses generation if a Code instance claims its port.
 
-Ordinary conversations persist under the relay's `chat/` state directory and their unsent text drafts persist in the browser. Temporary chats stay in relay memory until restart, explicit deletion, or expiration after an hour without a completed turn. They have no inbox entry, shareable URL, or stored draft. The hosted model still sees temporary prompts. Neither mode stores unsent attachments in the browser across reloads.
+Ordinary conversations persist under the relay's `chat/` state directory and their unsent text drafts persist in the browser. Temporary chats stay in relay memory until restart, explicit deletion, or expiration after an hour without a completed turn. They have no inbox entry, shareable URL, or stored draft. The hosted model still sees temporary prompts. Chat keeps unsent attachments in the current tab until the page reloads.
 
 The HTTP boundary regression is in `test/unit/server/http-router.test.ts`. The core files are `src/lib/chat/{http,service,types}.ts` and `src/lib/frontend/pages/ConversationPage.svelte`. The tool-free generation contract is documented in [OpenCode's HTTP API](https://opencode.ai/docs/api).
+
+## Optional Mullvad search worker
+
+Chat shows **Web search** only when Conduit has a worker URL and token. Type and review a query, then choose **Run search**. Search results and optional page excerpts stay in memory for up to ten minutes of usable access. To send them to NodeCode, review them and select the checkbox before sending a chat message. A regular chat stores the included source context with that turn. Temporary chat keeps it in memory.
+
+1. Use a dedicated Mullvad WireGuard configuration and an existing Brave Search API credential. Keep both outside the repository with file mode `0600`. Make a protected worker env file with `BRAVE_SEARCH_API_KEY` and `CONDUIT_CHAT_SEARCH_TOKEN`. Generate the token with `openssl rand -hex 32`.
+2. Set `CONDUIT_MULLVAD_WIREGUARD_FILE` and `CONDUIT_SEARCH_ENV_FILE` to the absolute paths of those two files. Run `docker compose -f deploy/search/compose.yaml up -d --build` on a host with Compose and a working WireGuard/TUN device. Gluetun owns the VPN network namespace and firewall. The worker shares that namespace, with a read-only filesystem and no added capabilities. Host publishing is loopback only. Never expose the worker through Tailscale Serve or a public proxy.
+3. Set `CONDUIT_CHAT_SEARCH_URL=http://127.0.0.1:8754` and the same `CONDUIT_CHAT_SEARCH_TOKEN` on the relay. The default worker port is 8754. An authenticated JSON POST with body `{}` to the worker's `/status` path verifies Mullvad egress without sending a query. Pass the bearer header from a protected config file or stdin when checking it.
+4. Verify a search and a page excerpt through the UI. Take the dedicated VPN service down, then verify that search and page reading return unavailable, ordinary Chat can still answer, and Tailscale still serves the relay. Bring the dedicated VPN instance back up and repeat the exit check.
+
+Every request uses Mullvad's in-tunnel SOCKS5 address with remote DNS. The worker verifies the Mullvad exit before transmitting a query or page hostname and has no alternate transport. Brave can associate the reviewed query with its API account. Page reading starts only from a current search result, resolves public IPv4 through Cloudflare DoH over the tunnel, pins the validated destination with TLS hostname verification, and rejects redirects, non-public IPs, non-text media and oversized responses. Pages available only over IPv6 may still appear as indexed snippets. External source links in the transcript open in the browser when clicked and use the browser's own connection.
+
+Run `python3 -B -m unittest discover -s deploy/search -v` for worker regressions. The worker has no Chat history or model credential mounts and deliberately omits request details from its logs.
+
+- [Mullvad SOCKS5 configuration](https://mullvad.net/en/help/socks5-proxy)
+- [Gluetun WireGuard configuration](https://github.com/qdm12/gluetun-wiki/blob/main/setup/options/wireguard.md)
+- [Brave Web Search API](https://api-dashboard.search.brave.com/documentation/services/web-search)
+
+## Continuing a Chat message in Code
+
+Choose **Continue in Code** on a message, edit the excerpt, and choose a ready project. In Code, choose **Create session with draft**. The browser stages only the selected text in memory for up to ten minutes, then saves it in the new session's regular Code composer after verifying the matching creation acknowledgment. A draft created from temporary Chat can persist in Code after this explicit transfer. The user controls when it is sent.
+
+The handoff store is `src/lib/frontend/stores/chat-handoff.svelte.ts`. The desktop and mobile round-trip lives in `test/e2e/specs/conversation.spec.ts`.
