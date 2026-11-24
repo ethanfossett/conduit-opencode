@@ -58,7 +58,11 @@ export interface PayloadMap {
 		sessionId?: string;
 		delivery?: "steer" | "queue";
 	};
-	new_session: { title?: string; requestId?: RequestId };
+	new_session: {
+		title?: string;
+		requestId?: RequestId;
+		model?: { providerID: string; modelID: string };
+	};
 	switch_session: { sessionId: string };
 	view_session: { sessionId: string };
 	delete_session: { sessionId: string };
@@ -170,6 +174,11 @@ export interface PayloadMap {
 	delete_credential: { credentialId: string };
 	activate_credential: { credentialId: string };
 	// ── Integrations (connect flows) ──────────────────────────────────────────
+	nodecode_setup: {
+		action: import("../nodecode.js").NodecodeAction;
+		requestId: string;
+		key?: string;
+	};
 	list_integrations: Record<string, never>;
 	integration_connect_key: {
 		integrationID: string;

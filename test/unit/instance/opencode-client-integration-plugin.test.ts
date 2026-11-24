@@ -64,6 +64,20 @@ describe("integration client methods", () => {
 		expect(integrations[0]?.id).toBe("anthropic");
 	});
 
+	it("scopes integration discovery and key connection to the project location", async () => {
+		const calls = stubFetch(() => ({ data: [] }));
+		const scoped = new OpenCodeClient({
+			baseUrl: "http://127.0.0.1:4096",
+			directory: "/work/My Project",
+		});
+		await scoped.listIntegrations();
+		await scoped.integrationConnectKey("nodecode", { key: "test-key" });
+		expect(calls.map(({ url }) => url)).toEqual([
+			`${BASE}/integration?location[directory]=%2Fwork%2FMy%20Project`,
+			`${BASE}/integration/nodecode/connect/key?location[directory]=%2Fwork%2FMy%20Project`,
+		]);
+	});
+
 	it("getIntegration GETs one integration", async () => {
 		const calls = stubFetch(() => ({
 			data: {

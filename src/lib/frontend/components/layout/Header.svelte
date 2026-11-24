@@ -225,6 +225,8 @@
 			<Icon name="git-fork" size={15} />
 		</button>
 
+		<a href="/chat" class="header-icon-btn flex items-center px-2 text-xs" title="Open Chat">Chat</a>
+
 		<!-- Settings -->
 		<button
 			id="header-settings-btn"

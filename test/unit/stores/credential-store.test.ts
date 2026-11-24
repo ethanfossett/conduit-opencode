@@ -11,14 +11,14 @@ import {
 	handleCredentialList,
 	requestCredentials,
 } from "../../../src/lib/frontend/stores/credentials.svelte.js";
-import type { CredentialEntry } from "../../../src/lib/shared-types.js";
+import type { CredentialSummary } from "../../../src/lib/shared-types.js";
 
-const ENTRY: CredentialEntry = {
+const ENTRY: CredentialSummary = {
 	id: "cred-1",
 	integrationID: "anthropic",
 	label: "Work",
 	active: true,
-	value: { type: "key", key: "sk-1234567890abcd" },
+	value: { type: "key", suffix: "abcd" },
 };
 
 beforeEach(() => {
@@ -50,9 +50,9 @@ describe("credentialValueSummary", () => {
 	});
 
 	it("summarizes short keys generically", () => {
-		expect(
-			credentialValueSummary({ ...ENTRY, value: { type: "key", key: "abc" } }),
-		).toBe("API key");
+		expect(credentialValueSummary({ ...ENTRY, value: { type: "key" } })).toBe(
+			"API key",
+		);
 	});
 
 	it("summarizes oauth credentials", () => {
@@ -62,9 +62,6 @@ describe("credentialValueSummary", () => {
 				value: {
 					type: "oauth",
 					methodID: "m-1",
-					refresh: "r",
-					access: "a",
-					expires: 0,
 				},
 			}),
 		).toBe("OAuth · m-1");

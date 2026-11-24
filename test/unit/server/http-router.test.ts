@@ -1,12 +1,20 @@
 // ─── HTTP Router Tests ───────────────────────────────────────────────────────
 // Tests for the RequestRouter class extracted from server.ts and daemon.ts.
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdtempSync,
+	readdirSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthManager } from "../../../src/lib/auth.js";
+import { ChatSearch } from "../../../src/lib/chat/search.js";
+import { ChatService } from "../../../src/lib/chat/service.js";
 import {
 	MIME_TYPES,
 	RequestRouter,
@@ -48,6 +56,7 @@ function createTestServer(overrides: Partial<RequestRouterDeps> = {}): {
 
 	const deps: RequestRouterDeps = {
 		auth,
+		...(overrides.chat && { chat: overrides.chat }),
 		staticDir,
 		getProjects: overrides.getProjects ?? (() => projects),
 		port,
@@ -851,4 +860,362 @@ describe("RequestRouter", () => {
 			expect(body.authenticated).toBe(false);
 		});
 	});
+});
+
+describe("projectless Chat", () => {
+	it("requires auth and a same-origin mutation header, and exposes no Code actions", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "conduit-chat-"));
+		const inputs: string[] = [];
+		const generate = async (input: string) => {
+			inputs.push(input);
+			return "Test reply";
+		};
+		const chatDirectory = join(directory, "chat");
+		const chat = new ChatService(chatDirectory, generate);
+		const auth = new AuthManager({ statePath: join(directory, "auth.json") });
+		auth.setPin("123456");
+		const app = createTestServer({ chat, auth, staticDir: sharedStaticDir });
+		await app.start();
+		try {
+			const request = (path: string, init?: RequestInit) =>
+				fetch(app.url(path), init);
+			const post = (body: unknown, includeHeader = true): RequestInit => ({
+				method: "POST",
+				body: JSON.stringify(body),
+				headers: {
+					"Content-Type": "application/json",
+					"X-Relay-Pin": "123456",
+					...(includeHeader && { "X-Conduit-Chat": "1" }),
+				},
+			});
+			expect((await request("/api/chat")).status).toBe(401);
+			expect((await request("/api/chat", post({}, false))).status).toBe(403);
+			expect((await request("/api/chat/terminal", post({}))).status).toBe(404);
+			expect(
+				(
+					await request(
+						"/api/chat/ffffffff-ffff-ffff-ffff-ffffffffffff",
+						post({ text: "Unknown ID" }),
+					)
+				).status,
+			).toBe(404);
+			expect(inputs).toEqual([]);
+
+			const first = await request("/api/chat", post({ temporary: false }));
+			expect(first.status).toBe(201);
+			expect(first.headers.get("Access-Control-Allow-Origin")).toBeNull();
+			expect(first.headers.get("Cache-Control")).toBe("no-store");
+			const persisted = await first.json();
+			const path = `/api/chat/${persisted.id}`;
+			expect(
+				(await request(path, post({ text: "No tools", tools: ["shell"] })))
+					.status,
+			).toBe(400);
+			expect(
+				(
+					await request(
+						path,
+						post({
+							text: "Use attachment",
+							attachments: [{ name: "note.txt", text: "test context" }],
+						}),
+					)
+				).status,
+			).toBe(200);
+			expect(inputs).toHaveLength(1);
+			expect(inputs[0]).toContain("test context");
+			const temp = await (
+				await request("/api/chat", post({ temporary: true }))
+			).json();
+			expect(
+				(await request(`/api/chat/${temp.id}`, post({ text: "Transient" })))
+					.status,
+			).toBe(200);
+
+			const restarted = new ChatService(chatDirectory, generate);
+			expect((await restarted.list()).map((summary) => summary.id)).toEqual([
+				persisted.id,
+			]);
+			expect((await restarted.get(persisted.id)).messages.at(-1)?.text).toBe(
+				"Test reply",
+			);
+			await expect(restarted.get(temp.id)).rejects.toMatchObject({
+				status: 404,
+			});
+			expect(readdirSync(chatDirectory)).toEqual([`${persisted.id}.json`]);
+			expect(
+				statSync(join(chatDirectory, `${persisted.id}.json`)).mode & 0o777,
+			).toBe(0o600);
+		} finally {
+			await app.stop();
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("Chat private search", () => {
+	it("isolates reviewed queries and attaches source context only on an explicit send", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "conduit-search-"));
+		const lookup = vi.fn(async (_query: string) => [
+			{
+				title: "Source",
+				url: "https://example.org/",
+				snippet: "Indexed snippet",
+			},
+		]);
+		const read = vi.fn(async (_url: string) => "Page excerpt");
+		const generate = vi.fn(async (_prompt: string) => "Reply");
+		const chat = new ChatService(
+			directory,
+			generate,
+			new ChatSearch(lookup, read),
+		);
+		const app = createTestServer({ chat });
+		await app.start();
+		try {
+			const post = (path: string, data: unknown) =>
+				fetch(app.url(path), {
+					method: "POST",
+					headers: {
+						"X-Conduit-Chat": "1",
+						"Content-Type": "application/json",
+					},
+					body: JSON.stringify(data),
+				});
+			const current = `/api/chat/${(await chat.create(true)).id}`;
+			const other = `/api/chat/${(await chat.create(true)).id}`;
+			expect(
+				(
+					await post(`${current}/search`, {
+						query: "public topic",
+						text: "private draft",
+					})
+				).status,
+			).toBe(400);
+			expect(lookup).not.toHaveBeenCalled();
+
+			const response = await post(`${current}/search`, {
+				query: "public topic",
+			});
+			expect(response.status).toBe(200);
+			expect(lookup).toHaveBeenCalledExactlyOnceWith("public topic");
+			expect(generate).not.toHaveBeenCalled();
+			const result = await response.json();
+			expect(
+				(await post(`${other}/search/read`, { searchId: result.id, index: 0 }))
+					.status,
+			).toBe(409);
+			expect(
+				(await post(`${current}/search/read`, { url: "https://example.org/" }))
+					.status,
+			).toBe(400);
+			expect(read).not.toHaveBeenCalled();
+			expect(
+				(
+					await post(`${current}/search/read`, {
+						searchId: result.id,
+						index: 0,
+					})
+				).status,
+			).toBe(200);
+			expect(read).toHaveBeenCalledExactlyOnceWith("https://example.org/");
+
+			expect((await post(current, { text: "ordinary question" })).status).toBe(
+				200,
+			);
+			expect(generate.mock.calls[0]?.[0]).not.toContain("Indexed snippet");
+			expect(
+				(await post(other, { text: "cross-chat", searchId: result.id })).status,
+			).toBe(409);
+			expect(
+				(await post(current, { text: "use sources", searchId: result.id }))
+					.status,
+			).toBe(200);
+			expect(generate.mock.calls[1]?.[0]).toContain("Page excerpt");
+			expect(
+				(await post(current, { text: "reuse sources", searchId: result.id }))
+					.status,
+			).toBe(409);
+
+			lookup.mockRejectedValueOnce(new Error("test tunnel failure"));
+			expect(
+				(await post(`${other}/search`, { query: "another query" })).status,
+			).toBe(503);
+			expect(
+				(await post(other, { text: "ordinary chat after outage" })).status,
+			).toBe(200);
+		} finally {
+			await app.stop();
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("durable Chat turns and inbox", () => {
+	it("accepts a turn once, reports partial text, and stops without replacing history", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "conduit-chat-turn-"));
+		const generate = vi.fn(
+			async (
+				_input: string,
+				signal: AbortSignal,
+				onText: (text: string) => void,
+			) => {
+				onText("Visible partial reply");
+				return new Promise<string>((_, reject) =>
+					signal.addEventListener("abort", () => reject(new Error("Stopped")), {
+						once: true,
+					}),
+				);
+			},
+		);
+		const chat = new ChatService(directory, generate);
+		const app = createTestServer({ chat });
+		await app.start();
+		try {
+			const item = await chat.create(false);
+			const root = `/api/chat/${item.id}`;
+			const post = (path: string, body: unknown) =>
+				fetch(app.url(path), {
+					method: "POST",
+					headers: {
+						"X-Conduit-Chat": "1",
+						"Content-Type": "application/json",
+					},
+					body: JSON.stringify(body),
+				});
+			const requestId = "aaaabbbb-cccc-dddd-eeee-ffffffffffff";
+			const accepted = await post(`${root}/turns`, {
+				requestId,
+				text: "Recoverable prompt",
+			});
+			expect(accepted.status).toBe(202);
+			expect((await accepted.json()).turn.id).toBe(requestId);
+			await post(`${root}/turns`, { requestId, text: "Recoverable prompt" });
+			expect(generate).toHaveBeenCalledTimes(1);
+			const progress = await (await fetch(app.url(root))).json();
+			expect(progress.turn).toMatchObject({
+				status: "running",
+				reply: "Visible partial reply",
+			});
+
+			const status = await (await fetch(app.url(`${root}/turns`))).json();
+			expect(status).toEqual({
+				running: { id: requestId, reply: "Visible partial reply" },
+			});
+
+			const restarted = new ChatService(directory, generate);
+			expect((await restarted.get(item.id)).turn?.status).toBe("failed");
+			const stopped = await (
+				await post(`${root}/turns/stop`, { requestId })
+			).json();
+			expect(stopped.messages).toEqual([]);
+			expect(stopped.turn).toMatchObject({
+				status: "stopped",
+				reply: "Visible partial reply",
+			});
+			expect((await restarted.get(item.id)).turn?.status).toBe("stopped");
+		} finally {
+			await app.stop();
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it("supports inbox metadata and branching without losing the original on a failed edit", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "conduit-chat-history-"));
+		const generate = vi.fn(async () => "A distinctive answer.");
+		const chat = new ChatService(directory, generate);
+		try {
+			const parent = await chat.create(false);
+			const temporary = await chat.create(true);
+			await chat.send(parent.id, "Original prompt");
+			const pinned = await chat.editMetadata(parent.id, {
+				title: "Project notes",
+				pinned: true,
+				archived: true,
+			});
+			expect(pinned).toMatchObject({
+				title: "Project notes",
+				pinned: true,
+				archived: true,
+			});
+			expect(await chat.list("distinctive")).toEqual([
+				expect.objectContaining({ id: parent.id, archived: true }),
+			]);
+			expect(await chat.list("missing")).toEqual([]);
+			const branch = await chat.create(false, { id: parent.id, through: 2 });
+			expect(branch.messages).toEqual(pinned.messages);
+			expect(branch.title).toBe("Branch of Project notes");
+			await expect(
+				chat.create(false, { id: temporary.id, through: 1 }),
+			).rejects.toMatchObject({ status: 400 });
+
+			generate.mockRejectedValueOnce(new Error("provider unavailable"));
+			await chat.startTurn(parent.id, {
+				requestId: "aaaabbbb-cccc-4444-eeee-ffffffffffff",
+				text: "Revised prompt",
+				editFrom: 0,
+			});
+			await vi.waitFor(async () => {
+				const result = await chat.get(parent.id);
+				expect(result.messages).toEqual(pinned.messages);
+				expect(result.turn).toMatchObject({ status: "failed" });
+			});
+			await chat.startTurn(parent.id, {
+				requestId: "aaaabbbb-cccc-4444-eeee-eeeeeeeeeeee",
+				retry: true,
+			});
+			await vi.waitFor(async () => {
+				const updated = await chat.get(parent.id);
+				expect(updated.turn).toBeUndefined();
+				expect(updated.messages[0]?.text).toBe("Revised prompt");
+				expect(updated.title).toBe("Project notes");
+			});
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+});
+
+it("keeps Chat dictation on loopback even when the configured endpoint redirects", async () => {
+	let forwarded = 0;
+	const upstream = createServer((req, res) => {
+		if (req.url === "/redirect") {
+			res.writeHead(307, { Location: "/elsewhere" }).end();
+		} else {
+			forwarded++;
+			res.writeHead(200).end('{"text":"Unexpected forwarding"}');
+		}
+	});
+	await new Promise<void>((resolve) =>
+		upstream.listen(0, "127.0.0.1", resolve),
+	);
+	const address = upstream.address();
+	if (!address || typeof address === "string")
+		throw new Error("Missing test endpoint");
+	const app = createTestServer();
+	await app.start();
+	try {
+		const transcribe = () =>
+			fetch(app.url("/api/stt"), {
+				method: "POST",
+				headers: {
+					"Content-Type": "audio/mp4",
+					"X-Conduit-Local-Dictation": "1",
+				},
+				body: "test audio",
+			});
+		vi.stubEnv("CONDUIT_STT_URL", "http://192.0.2.1/inference");
+		const denied = await transcribe();
+		expect(denied.status).toBe(503);
+		expect(denied.headers.get("Cache-Control")).toBe("no-store");
+		expect(denied.headers.get("Access-Control-Allow-Origin")).toBeNull();
+
+		vi.stubEnv("CONDUIT_STT_URL", `http://127.0.0.1:${address.port}/redirect`);
+		expect((await transcribe()).status).toBe(503);
+		expect(forwarded).toBe(0);
+	} finally {
+		vi.unstubAllEnvs();
+		await app.stop();
+		await new Promise<void>((resolve) => upstream.close(() => resolve()));
+	}
 });

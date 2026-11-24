@@ -326,6 +326,10 @@ export interface CredentialEntry {
 	value: CredentialValue;
 }
 
+export interface CredentialSummary extends Omit<CredentialEntry, "value"> {
+	value: { type: "key"; suffix?: string } | { type: "oauth"; methodID: string };
+}
+
 /** Body accepted by POST /api/credential (Credential.CreateInput). */
 export interface CredentialCreateInput {
 	integrationID: string;
@@ -685,6 +689,13 @@ export type RelayMessage =
 	// ── Server-provided references (@-mentions) ────────────────────────────
 	| { type: "reference_list"; references: ReferenceInfo[] }
 	// ── Integrations (connect flows) ───────────────────────────────────────
+	| {
+			type: "nodecode_status";
+			requestId: string;
+			status: import("./nodecode.js").NodecodeStatus;
+			serverVersion?: string;
+			message?: string;
+	  }
 	| { type: "integration_list"; integrations: IntegrationInfo[] }
 	| {
 			type: "integration_attempt";
@@ -712,7 +723,7 @@ export type RelayMessage =
 			message?: string;
 	  }
 	// ── Integration credentials ────────────────────────────────────────────
-	| { type: "credential_list"; credentials: CredentialEntry[] }
+	| { type: "credential_list"; credentials: CredentialSummary[] }
 	// ── Server info / config ───────────────────────────────────────────────
 	| { type: "server_info"; info: ServerInfo }
 	| { type: "config_reloaded"; ok: boolean }
@@ -779,6 +790,7 @@ export type RelayMessage =
 	// ── Misc ────────────────────────────────────────────────────────────────
 	| {
 			type: "error";
+			requestId?: string;
 			code: string;
 			message: string;
 			statusCode?: number;

@@ -11,6 +11,16 @@ import { fileURLToPath } from "node:url";
 
 import { AuthManager } from "../auth.js";
 import {
+	ChatDuplex,
+	configuredDuplexEndpoint,
+	sameChatVoiceOrigin,
+} from "../chat/duplex.js";
+import {
+	type ChatService,
+	configuredChatEndpoint,
+	createConfiguredChat,
+} from "../chat/service.js";
+import {
 	ensureCerts,
 	getAllIPs,
 	getTailscaleIP,
@@ -399,8 +409,15 @@ export class Daemon {
 		// Rehydrate instances from persisted config (so relays can pick them up
 		// before HTTP/IPC servers start).
 		const savedConfig = loadDaemonConfig(this.configDir);
+		const chatPort = Number(configuredChatEndpoint()?.port);
 		if (savedConfig?.instances) {
 			for (const inst of savedConfig.instances) {
+				if (
+					inst.port === chatPort &&
+					inst.id === `discovered-${chatPort}` &&
+					!inst.managed
+				)
+					continue;
 				const existing = this.instanceManager.getInstance(inst.id);
 				if (existing) {
 					// Apply saved name to constructor-created instances (e.g. "default")
@@ -626,7 +643,18 @@ export class Daemon {
 		);
 
 		// Create HTTP request router
+		let chat: ChatService | undefined;
+		try {
+			chat = createConfiguredChat(join(this.configDir, "chat"), () =>
+				this.instanceManager.getInstances().map((instance) => instance.port),
+			);
+		} catch {
+			this.log.warn(
+				"Chat configuration rejected. Use a dedicated OpenCode loopback port.",
+			);
+		}
 		this.router = new RequestRouter({
+			...(chat && { chat }),
 			auth: this.auth,
 			staticDir: this.staticDir,
 			getProjects: () => {
@@ -684,8 +712,29 @@ export class Daemon {
 		// Must be registered after HTTP server starts but before any relays are added.
 		// When protocol detection is active, upgrades fire on the inner HTTPS server.
 		const wsServer = this.upgradeServer ?? this.httpServer;
+		const duplexEndpoint = configuredDuplexEndpoint();
+		const duplex =
+			chat && duplexEndpoint ? new ChatDuplex(chat, duplexEndpoint) : undefined;
 		// biome-ignore lint/style/noNonNullAssertion: safe — initialized by startHttpServer above
 		wsServer!.on("upgrade", async (req, socket, head) => {
+			const voice =
+				/^\/api\/chat\/([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\/duplex$/.exec(
+					req.url ?? "",
+				)?.[1];
+			if (voice) {
+				if (
+					!duplex ||
+					this.shuttingDown ||
+					!this.auth.hasPin() ||
+					!this.router?.checkAuth(req) ||
+					!sameChatVoiceOrigin(req)
+				) {
+					socket.destroy();
+					return;
+				}
+				await duplex.upgrade(req, socket, head, voice);
+				return;
+			}
 			const match = req.url?.match(/^\/p\/([^/]+)\/ws(?:\?|$)/);
 			if (!match) {
 				this.log.debug(
@@ -758,6 +807,7 @@ export class Daemon {
 					.filter((i) => i.managed)
 					.map((i) => i.port),
 			);
+			if (Number.isInteger(chatPort)) managedPorts.add(chatPort);
 			this.scanner.excludePorts(managedPorts);
 
 			this.scanner.on("scan", (result: ScanResult) => {

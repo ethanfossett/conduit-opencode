@@ -1,4 +1,5 @@
 import { handleSubmissionResult } from "./submissions.svelte.js";
+
 // ─── WebSocket Message Dispatch ──────────────────────────────────────────────
 // Extracted from ws.svelte.ts — centralized message routing and event replay.
 // Pure dispatch table: routes incoming RelayMessage to the appropriate store.
@@ -46,6 +47,7 @@ import {
 	renderDeferredMarkdown,
 	seedRegistryFromMessages,
 } from "./chat.svelte.js";
+import { completeChatHandoff } from "./chat-handoff.svelte.js";
 import { handleCredentialList } from "./credentials.svelte.js";
 import {
 	handleAgentInfo,
@@ -75,6 +77,7 @@ import {
 import {
 	handleIntegrationAttempt,
 	handleIntegrationList,
+	integrationState,
 } from "./integration.svelte.js";
 import { handleMcpList, handleMcpResources } from "./mcp.svelte.js";
 import { dispatch } from "./notification-reducer.svelte.js";
@@ -93,6 +96,7 @@ import { getCurrentSlug, replaceRoute } from "./router.svelte.js";
 import { handleServerInfo } from "./server-info.svelte.js";
 import {
 	consumeSwitchingFromId,
+	failNewSession,
 	findSession,
 	handleSessionForked,
 	handleSessionList,
@@ -454,10 +458,11 @@ export function handleMessage(msg: RelayMessage): void {
 			// prevent stale IDs from leaking into future server-initiated switches.
 			const previousSessionId =
 				consumeSwitchingFromId() ?? sessionState.currentId;
+			const slug = getCurrentSlug();
+			if (msg.id) completeChatHandoff(slug, msg.requestId, msg.id);
 			handleSessionSwitched(msg);
 
 			// Update URL to reflect the new session
-			const slug = getCurrentSlug();
 			if (slug && msg.id) replaceRoute(`/p/${slug}/s/${msg.id}`);
 
 			// Idempotent — switchToSession() already cleared optimistically,
@@ -597,6 +602,9 @@ export function handleMessage(msg: RelayMessage): void {
 			break;
 		case "reference_list":
 			handleReferenceList(msg);
+			break;
+		case "nodecode_status":
+			integrationState.nodecode = msg;
 			break;
 		case "integration_list":
 			handleIntegrationList(msg);
@@ -924,6 +932,12 @@ function handleToolContentResponse(
 /** Error routing: PTY errors vs chat errors. */
 function handleChatError(msg: Extract<RelayMessage, { type: "error" }>): void {
 	const code = msg.code;
+
+	if (code === "SESSION_CREATE_FAILED" && msg.requestId) {
+		failNewSession(msg.requestId, msg.message);
+		showToast(msg.message, { variant: "warn" });
+		return;
+	}
 
 	// PTY-related errors
 	if (code === "PTY_CONNECT_FAILED") {

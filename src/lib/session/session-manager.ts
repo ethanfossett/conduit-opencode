@@ -358,9 +358,15 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
 	/** Create a new session */
 	async createSession(
 		title?: string,
-		opts?: { silent?: boolean },
+		opts?: {
+			silent?: boolean;
+			model?: { providerID: string; modelID: string };
+		},
 	): Promise<SessionDetail> {
-		const session = await this.client.createSession(title ? { title } : {});
+		const session = await this.client.createSession({
+			...(title && { title }),
+			...opts?.model,
+		});
 
 		this.emit("session_lifecycle", { type: "created", sessionId: session.id });
 

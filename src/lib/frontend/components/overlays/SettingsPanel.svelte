@@ -653,7 +653,7 @@
 
 				<!-- ═══ Integrations ═══ -->
 				{:else if activeTab === "integrations"}
-					<IntegrationsPanel />
+					<IntegrationsPanel onClose={onClose} />
 
 				<!-- ═══ Plugins ═══ -->
 				{:else if activeTab === "plugins"}

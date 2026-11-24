@@ -114,6 +114,7 @@ const validMessageTypes: IncomingMessageType[] = [
 	"update_credential",
 	"delete_credential",
 	"activate_credential",
+	"nodecode_setup",
 	"list_integrations",
 	"integration_connect_key",
 	"integration_connect_oauth",
@@ -476,7 +477,7 @@ describe("Ticket 2.2 — WebSocket Message Router PBT", () => {
 			expect(isRouteError(invalidResult)).toBe(true);
 
 			// Verify our test list has exactly the right number (matches production)
-			expect(validMessageTypes).toHaveLength(94);
+			expect(validMessageTypes).toHaveLength(95);
 
 			// Verify no duplicates
 			const uniqueTypes = new Set(validMessageTypes);

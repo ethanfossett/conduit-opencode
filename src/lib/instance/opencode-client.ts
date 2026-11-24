@@ -768,6 +768,14 @@ export class OpenCodeClient {
 		}
 	}
 
+	/** V2 location-aware provider routes accept an explicit directory query. */
+	private atLocation(path: string): string {
+		const directory = this.headers["x-opencode-directory"];
+		return directory
+			? `${path}?location[directory]=${encodeURIComponent(directory)}`
+			: path;
+	}
+
 	// ─── System ──────────────────────────────────────────────────────────────
 
 	async getHealth(): Promise<HealthResponse> {
@@ -1252,9 +1260,9 @@ export class OpenCodeClient {
 
 	async listProviders(): Promise<ProviderListResult> {
 		const [providerRes, modelRes, defaultRes] = await Promise.all([
-			this.get("/provider"),
-			this.get("/model"),
-			this.get("/model/default").catch(() => undefined),
+			this.get(this.atLocation("/provider")),
+			this.get(this.atLocation("/model")),
+			this.get(this.atLocation("/model/default")).catch(() => undefined),
 		]);
 		const providers = unwrapList<V2ProviderInfo>(providerRes);
 		const models = unwrapList<V2ModelInfo>(modelRes);
@@ -1694,6 +1702,44 @@ export class OpenCodeClient {
 		return merged;
 	}
 
+	/** Check each config document since providers can be defined at different scopes. */
+	async hasConfiguredProvider(providerID: string): Promise<boolean> {
+		const res = await this.get(this.atLocation("/config"));
+		const entries = Array.isArray(res) ? res : unwrapList<unknown>(res);
+		return entries.some((entry) => {
+			const document = entry as {
+				type?: string;
+				info?: {
+					providers?: Record<string, unknown>;
+					config?: { providers?: Record<string, unknown> };
+				};
+			} | null;
+			if (document?.type !== "document") return false;
+			const providers =
+				document.info?.config?.providers ?? document.info?.providers;
+			return !!providers && Object.hasOwn(providers, providerID);
+		});
+	}
+
+	/** Send one text request without creating a chat or retrying a paid call. */
+	async generateText(
+		model: { providerID: string; modelID: string },
+		prompt: string,
+		signal?: AbortSignal,
+	): Promise<string> {
+		const res = await this.request(
+			"POST",
+			"/experimental/generate",
+			{
+				model: { providerID: model.providerID, id: model.modelID },
+				prompt,
+			},
+			signal,
+			0,
+		);
+		return unwrapData<{ text?: string }>(res)?.text ?? "";
+	}
+
 	// ─── Server Info ─────────────────────────────────────────────────────────
 
 	/** Server identity + readiness (v2 GET /api/info → ServerInfo). */
@@ -1786,7 +1832,7 @@ export class OpenCodeClient {
 
 	/** List available integrations + auth methods (v2 GET /api/integration). */
 	async listIntegrations(): Promise<IntegrationInfo[]> {
-		const res = await this.get("/integration");
+		const res = await this.get(this.atLocation("/integration"));
 		return unwrapList<IntegrationInfo>(res);
 	}
 
@@ -1806,11 +1852,17 @@ export class OpenCodeClient {
 			answer?: Record<string, unknown>;
 		},
 	): Promise<void> {
-		await this.post(`/integration/${encodeURIComponent(id)}/connect/key`, {
-			key: input.key,
-			...(input.label !== undefined && { label: input.label }),
-			...(input.answer !== undefined && { answer: input.answer }),
-		});
+		await this.request(
+			"POST",
+			this.atLocation(`/integration/${encodeURIComponent(id)}/connect/key`),
+			{
+				key: input.key,
+				...(input.label !== undefined && { label: input.label }),
+				...(input.answer !== undefined && { answer: input.answer }),
+			},
+			undefined,
+			0,
+		);
 	}
 
 	/** Begin an OAuth connect attempt (v2 POST …/connect/oauth). */
@@ -1939,6 +1991,7 @@ export class OpenCodeClient {
 		path: string,
 		body?: unknown,
 		signal?: AbortSignal,
+		retries = this.retries,
 	): Promise<unknown> {
 		const url = `${this.baseUrl}${API_PREFIX}${path}`;
 
@@ -1948,7 +2001,7 @@ export class OpenCodeClient {
 		}
 
 		let lastError: Error | undefined;
-		for (let attempt = 0; attempt <= this.retries; attempt++) {
+		for (let attempt = 0; attempt <= retries; attempt++) {
 			try {
 				const controller = new AbortController();
 				const timer = setTimeout(() => controller.abort(), this.timeout);
@@ -2010,7 +2063,7 @@ export class OpenCodeClient {
 				}
 
 				// Retry on network/5xx errors
-				if (attempt < this.retries) {
+				if (attempt < retries) {
 					await new Promise((r) =>
 						setTimeout(r, this.retryDelay * (attempt + 1)),
 					);
@@ -2019,7 +2072,7 @@ export class OpenCodeClient {
 		}
 
 		throw new OpenCodeConnectionError(
-			`Failed to reach OpenCode at ${url} after ${this.retries + 1} attempts`,
+			`Failed to reach OpenCode at ${url} after ${retries + 1} attempts`,
 			{ ...(lastError != null && { cause: lastError }) },
 		);
 	}

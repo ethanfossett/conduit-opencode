@@ -532,3 +532,55 @@ test("a missing app bundle shows recovery instead of a white screen", async ({
 	).toBeVisible();
 	await expect(page.locator("#boot-reload")).toBeVisible();
 });
+
+test("NodeCode connects, tests, and opens a chat on the selected model", async ({
+	page,
+	relayUrl,
+}) => {
+	const setupActions: string[] = [];
+	let requestedModel: unknown;
+	await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
+		const server = socket.connectToServer();
+		socket.onMessage((raw) => {
+			const msg = JSON.parse(String(raw));
+			if (msg.type === "nodecode_setup") {
+				setupActions.push(msg.action);
+				socket.send(
+					JSON.stringify({
+						type: "nodecode_status",
+						requestId: msg.requestId,
+						status:
+							msg.action === "status"
+								? "needs_key"
+								: msg.action === "connect"
+									? "model_available"
+									: "test_passed",
+					}),
+				);
+				return;
+			}
+			if (msg.type === "new_session") requestedModel = msg.model;
+			server.send(raw);
+		});
+	});
+	await new AppPage(page).goto(relayUrl);
+	await page.locator("#header-settings-btn").click();
+	await page.getByRole("button", { name: "Integrations", exact: true }).click();
+	const card = page.getByRole("region", { name: "NodeCode · Cyber v1" });
+	await card.getByLabel("NodeCode API key").fill("sk-nc-browser-mock");
+	await card.getByRole("button", { name: "Connect NodeCode" }).click();
+	await expect(card.getByText("Cyber v1 is available.")).toBeVisible();
+	expect(setupActions).toEqual(["status", "connect"]);
+	await card.getByRole("button", { name: "Test connection" }).click();
+	await expect(
+		card.getByText("Test passed. Cyber v1 replied through OpenCode."),
+	).toBeVisible();
+	await card.getByRole("button", { name: "New chat with Cyber v1" }).click();
+	await expect
+		.poll(() => requestedModel)
+		.toEqual({
+			providerID: "nodecode",
+			modelID: "nodecode-cyber-v1",
+		});
+	await expect(card).toBeHidden();
+});

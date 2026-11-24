@@ -26,6 +26,7 @@ export type {
 	CommandInfo,
 	CredentialCreateInput,
 	CredentialEntry,
+	CredentialSummary,
 	CredentialValue,
 	FileEntry,
 	FileVersion,

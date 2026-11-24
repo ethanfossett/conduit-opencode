@@ -2769,6 +2769,34 @@ describe("instance rehydration on daemon restart", () => {
 		cleanTmpDir(tmpDir);
 	});
 
+	it("does not restore an auto-discovered Chat port as a Code instance", async () => {
+		vi.stubEnv("CONDUIT_CHAT_OPENCODE_URL", "http://127.0.0.1:4097");
+		vi.stubEnv("CONDUIT_CHAT_OPENCODE_PASSWORD", "test-password");
+		writeFileSync(
+			join(tmpDir, "daemon.json"),
+			JSON.stringify({
+				projects: [],
+				instances: [
+					{
+						id: "discovered-4097",
+						name: "Stale scanner entry",
+						port: 4097,
+						managed: false,
+					},
+					{ id: "code", name: "Code", port: 4096, managed: false },
+				],
+			}),
+		);
+		const daemon = new Daemon(daemonOpts(tmpDir));
+		try {
+			await daemon.start();
+			expect(daemon.getInstances().map(({ id }) => id)).toEqual(["code"]);
+		} finally {
+			await daemon.stop();
+			vi.unstubAllEnvs();
+		}
+	});
+
 	it("instances from saved config are rehydrated into instanceManager on start", async () => {
 		// Pre-write a daemon.json with saved instances
 		const { saveDaemonConfig } = await import(

@@ -5,15 +5,14 @@
 
 import type {
 	CredentialCreateInput,
-	CredentialEntry,
-	CredentialValue,
+	CredentialSummary,
 	RelayMessage,
 } from "../types.js";
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
 export const credentialState = $state({
-	credentials: [] as CredentialEntry[],
+	credentials: [] as CredentialSummary[],
 	/** True once at least one credential_list has been received. */
 	loaded: false,
 });
@@ -21,14 +20,12 @@ export const credentialState = $state({
 // ─── Derived helpers ────────────────────────────────────────────────────────
 
 /** Short, non-sensitive summary of a credential's value. */
-export function credentialValueSummary(entry: CredentialEntry): string {
-	const value: CredentialValue | undefined = entry.value;
+export function credentialValueSummary(entry: CredentialSummary): string {
+	const value = entry.value;
 	if (!value) return "";
 	if (value.type === "oauth") return `OAuth · ${value.methodID}`;
 	if (value.type === "key") {
-		const key = value.key ?? "";
-		if (key.length <= 8) return "API key";
-		return `API key · …${key.slice(-4)}`;
+		return value.suffix ? `API key · …${value.suffix}` : "API key";
 	}
 	return "";
 }

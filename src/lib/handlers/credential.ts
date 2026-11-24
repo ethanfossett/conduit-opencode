@@ -8,13 +8,32 @@
 // Every mutation re-lists and broadcasts credential_list so all clients sync.
 
 import { formatErrorDetail, RelayError } from "../errors.js";
-import type { CredentialEntry } from "../shared-types.js";
+import type { CredentialEntry, CredentialSummary } from "../shared-types.js";
 import type { PayloadMap } from "./payloads.js";
 import type { HandlerDeps } from "./types.js";
 
+function summarizeCredential(entry: CredentialEntry): CredentialSummary {
+	const { id, integrationID, label, active, value } = entry;
+	return {
+		id,
+		integrationID,
+		label,
+		active,
+		value:
+			value.type === "key"
+				? {
+						type: "key",
+						...(value.key?.length > 8 && { suffix: value.key.slice(-4) }),
+					}
+				: { type: "oauth", methodID: value.methodID },
+	};
+}
+
 async function broadcastCredentials(deps: HandlerDeps, clientId: string) {
 	try {
-		const credentials: CredentialEntry[] = await deps.client.listCredentials();
+		const credentials = (await deps.client.listCredentials()).map(
+			summarizeCredential,
+		);
 		deps.wsHandler.broadcast({ type: "credential_list", credentials });
 	} catch (err) {
 		deps.log.warn(
@@ -29,7 +48,9 @@ export async function handleListCredentials(
 	_payload: PayloadMap["list_credentials"],
 ): Promise<void> {
 	try {
-		const credentials = await deps.client.listCredentials();
+		const credentials = (await deps.client.listCredentials()).map(
+			summarizeCredential,
+		);
 		deps.wsHandler.sendTo(clientId, { type: "credential_list", credentials });
 	} catch (err) {
 		deps.log.warn(

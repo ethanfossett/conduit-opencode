@@ -27,3 +27,13 @@ pnpm check
 pnpm lint
 pnpm test:unit
 ```
+
+## Connect NodeCode
+
+In Conduit, go to **Settings → Integrations → NodeCode · Cyber v1**. If your OpenCode server needs the provider preset, copy it from the card and merge it into the OpenCode configuration on the server. Reload OpenCode’s config, then refresh the card. The native connection flow has been verified with OpenCode V2.3.2.
+
+Connect a regular [NodeCode API key](https://nodecode.ai/account/keys). Use **Test connection** to send a short request using your NodeCode balance, or **New chat with Cyber v1** to select it for a single session.
+
+## Development roadmap
+
+See the [Chat, Code, and private search roadmap](docs/agent-guide/chat-and-code.md) for implementation order, code entry points, and acceptance checks.

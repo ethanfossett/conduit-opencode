@@ -26,7 +26,7 @@ describe("handleListCredentials", () => {
 		await handleListCredentials(deps, "client-1", {});
 		expect(deps.wsHandler.sendTo).toHaveBeenCalledWith("client-1", {
 			type: "credential_list",
-			credentials: [ENTRY],
+			credentials: [{ ...ENTRY, value: { type: "key", suffix: "7890" } }],
 		});
 	});
 
@@ -54,7 +54,7 @@ describe("handleCreateCredential", () => {
 		expect(deps.client.createCredential).toHaveBeenCalledWith(payload);
 		expect(deps.wsHandler.broadcast).toHaveBeenCalledWith({
 			type: "credential_list",
-			credentials: [ENTRY],
+			credentials: [{ ...ENTRY, value: { type: "key", suffix: "7890" } }],
 		});
 	});
 

@@ -152,11 +152,17 @@ export function resetSessionCreation(): void {
  * shape so they can't diverge.
  */
 export function sendNewSession(
-	send: (data: Record<string, unknown>) => void,
+	send: (data: Record<string, unknown>) => unknown,
+	model?: { providerID: string; modelID: string },
 ): RequestId | null {
 	const requestId = requestNewSession();
 	if (!requestId) return null;
-	send({ type: "new_session", requestId });
+	if (
+		send({ type: "new_session", requestId, ...(model && { model }) }) === false
+	) {
+		failNewSession(requestId, "Disconnected. Reconnect and try again.");
+		return null;
+	}
 	return requestId;
 }
 

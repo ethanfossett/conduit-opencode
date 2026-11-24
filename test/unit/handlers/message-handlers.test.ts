@@ -1792,6 +1792,7 @@ describe("dispatchMessage", () => {
 			"update_credential",
 			"delete_credential",
 			"activate_credential",
+			"nodecode_setup",
 			"list_integrations",
 			"integration_connect_key",
 			"integration_connect_oauth",

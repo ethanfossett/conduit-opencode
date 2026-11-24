@@ -37,6 +37,7 @@ export const integrationState = $state({
 	attempts: {} as Record<string, IntegrationAttemptView>,
 	/** True once at least one integration_list has been received. */
 	loaded: false,
+	nodecode: null as Extract<RelayMessage, { type: "nodecode_status" }> | null,
 });
 
 // ─── Pure helpers ───────────────────────────────────────────────────────────
@@ -254,4 +255,5 @@ export function clearIntegrationState(): void {
 	integrationState.integrations = [];
 	integrationState.attempts = {};
 	integrationState.loaded = false;
+	integrationState.nodecode = null;
 }
