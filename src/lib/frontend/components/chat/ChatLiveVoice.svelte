@@ -17,6 +17,9 @@
 	let transcribing = $state(false);
 	let hold = $state(false);
 	let muted = $state(false);
+	let headphones = $state(false);
+	let speakerPlaying = $state(false);
+	let speakerTail: ReturnType<typeof setTimeout> | undefined;
 	let peer: RTCPeerConnection | undefined;
 	let channel: RTCDataChannel | undefined;
 	let mic: MediaStream | undefined;
@@ -37,6 +40,7 @@
 	let lastReply = "";
 	let played = 0;
 	let outputFinished = false;
+	let missingAudio = false;
 	let hearing = false;
 	const sources = new Set<AudioBufferSourceNode>();
 
@@ -44,6 +48,23 @@
 		if (channel?.readyState !== "open") return false;
 		channel.send(JSON.stringify({ type: "conduit-voice", ...data }));
 		return true;
+	}
+
+	function syncMicrophone() {
+		const enabled = !muted && (headphones || !speakerPlaying);
+		for (const track of mic?.getAudioTracks() ?? []) track.enabled = enabled;
+		send({ kind: "capture", enabled });
+	}
+
+	function setSpeakerPlaying(active: boolean) {
+		if (speakerPlaying === active) return;
+		speakerPlaying = active;
+		syncMicrophone();
+	}
+
+	function releaseSpeaker() {
+		clearTimeout(speakerTail);
+		speakerTail = setTimeout(() => setSpeakerPlaying(false), 320);
 	}
 
 	function clearAudio() {
@@ -54,6 +75,7 @@
 		}
 		sources.clear();
 		next = 0;
+		releaseSpeaker();
 	}
 
 	export async function interrupt() {
@@ -69,9 +91,8 @@
 		if (id && truncated) await onInterrupt(id, heard);
 	}
 
-	function stop(message = "", commit = true) {
+	function stop(message = "") {
 		if (status === "idle") return;
-		if (commit && (currentId || requestId)) void interrupt().catch(() => {});
 		epoch++;
 		clearTimeout(startup);
 		clearTimeout(network);
@@ -86,6 +107,8 @@
 		for (const track of mic?.getTracks() ?? []) track.stop();
 		mic = undefined;
 		clearAudio();
+		clearTimeout(speakerTail);
+		speakerPlaying = false;
 		if (audio) void audio.close().catch(() => {});
 		audio = undefined;
 		volume = undefined;
@@ -119,7 +142,7 @@
 		const samples = new Float32Array(meter.fftSize);
 		let loud = 0;
 		activity = setInterval(() => {
-			if (ctx.state !== "running" || muted || !volume || next < ctx.currentTime || hearing) {
+			if (ctx.state !== "running" || !headphones || muted || !volume || next < ctx.currentTime || hearing) {
 				loud = 0;
 				return;
 			}
@@ -142,9 +165,11 @@
 		const bytes = Uint8Array.from(atob(pcm), (c) => c.charCodeAt(0));
 		if (!bytes.length || bytes.length % 2) return;
 		if (next - ctx.currentTime > 6) {
-			stop("Audio fell behind. Reopen voice to continue.");
+			stop("Voice playback fell behind. The reply is still available in Chat.");
 			return;
 		}
+		clearTimeout(speakerTail);
+		setSpeakerPlaying(true);
 		const data = new DataView(bytes.buffer);
 		const buffer = ctx.createBuffer(1, bytes.length / 2, rate);
 		const samples = buffer.getChannelData(0);
@@ -157,6 +182,7 @@
 		player.onended = () => {
 			sources.delete(player);
 			player.disconnect();
+			if (ctx.currentTime >= next - 0.025) releaseSpeaker();
 		};
 		player.start(next);
 		next += buffer.duration;
@@ -193,6 +219,7 @@
 			offset = played = pendingPhrases = 0;
 			lastReply = "";
 			outputFinished = false;
+			missingAudio = false;
 		}
 		lastReply = reply;
 		while (offset < reply.length && pendingPhrases < 3) {
@@ -239,7 +266,9 @@
 			rate = data.rate;
 			clearTimeout(startup);
 			status = "listening";
+			syncMicrophone();
 		} else if (data.kind === "speech-start") {
+			if (muted || (!headphones && speakerPlaying)) return;
 			hearing = !!(currentId && (!outputFinished || pendingPhrases || offset < lastReply.length || sources.size));
 			if (hearing) {
 				clearTimeout(duckTimer);
@@ -247,12 +276,16 @@
 				if (audio?.state === "running") void audio.suspend().catch(() => {});
 			}
 		} else if (data.kind === "transcribing") {
-			transcribing = true;
+			if (!muted && (headphones || !speakerPlaying)) transcribing = true;
 		} else if (data.kind === "transcript" && typeof data.text === "string") {
 			transcribing = false;
+			if (muted || (!headphones && speakerPlaying)) return;
 			const said = data.text.trim();
 			const backchannel = /^(?:m+h+m+|mm[ -]?hmm|uh[ -]?huh|yeah|okay|ok|right|thanks|thank you)[.!?,]*$/i.test(said);
-			if (!said || (hearing && backchannel)) {
+			const normalize = (value: string) => value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+			const phrase = normalize(said);
+			const echo = hearing && phrase.split(" ").length >= 3 && ` ${normalize(lastReply)} `.includes(` ${phrase} `);
+			if (!said || (hearing && backchannel) || echo) {
 				hearing = false;
 				restoreVolume();
 				send({ kind: "pause-output", enabled: false });
@@ -266,16 +299,17 @@
 		} else if (data.kind === "audio" && data.id === currentId && data.id !== interruptedId && typeof data.pcm === "string") {
 			play(data.pcm);
 		} else if (data.kind === "audio-end" && data.id === currentId && data.id !== interruptedId && Number.isInteger(data.end)) {
-			markWhenPlayed(data.end);
+			if (!missingAudio) markWhenPlayed(data.end);
 			pendingPhrases = Math.max(0, pendingPhrases - 1);
 			feed(data.id, lastReply, outputFinished);
 		} else if (data.kind === "transcript-error" || data.kind === "synthesis-error") {
 			transcribing = false;
 			if (data.kind === "synthesis-error" && data.id === currentId) {
-				interruptedId = currentId;
-				send({ kind: "flush" });
+				missingAudio = true;
+				pendingPhrases = Math.max(0, pendingPhrases - 1);
+				feed(data.id, lastReply, outputFinished);
 			}
-			note = data.kind === "transcript-error" ? "Could not transcribe. Try again." : "Local speech synthesis paused.";
+			note = data.kind === "transcript-error" ? "Could not transcribe. Try again." : "A phrase could not be spoken. The full text is available in Chat.";
 			restoreVolume();
 			send({ kind: "pause-output", enabled: false });
 			if (audio?.state === "suspended") void audio.resume().catch(() => {});
@@ -363,7 +397,7 @@
 
 	function toggleMute() {
 		muted = !muted;
-		for (const track of mic?.getAudioTracks() ?? []) track.enabled = !muted;
+		syncMicrophone();
 	}
 
 	function toggleHold() {
@@ -375,7 +409,7 @@
 		if (document.hidden) stop("Voice paused when Chat went into the background.");
 	}
 
-	onDestroy(() => stop("", false));
+	onDestroy(() => stop());
 </script>
 
 <svelte:document onvisibilitychange={hidden} />
@@ -387,9 +421,13 @@
 	<button type="button" class="text-error underline" onclick={() => stop()}>End voice</button>
 	{#if status === "listening"}
 		<button type="button" class="text-text-muted underline" aria-pressed={muted} onclick={toggleMute}>{muted ? "Unmute mic" : "Mute mic"}</button>
+		<button type="button" class="text-text-muted underline" aria-pressed={headphones} onclick={() => { headphones = !headphones; syncMicrophone(); }}>{headphones ? "Headphones mode" : "Speaker mode"}</button>
+		{#if speakerPlaying || (requestId && chat.turn?.id === requestId && chat.turn.status === "running")}
+			<button type="button" class="text-accent underline" onclick={() => void interrupt().catch(() => { note = "Could not interrupt the reply."; })}>Interrupt</button>
+		{/if}
 		<button type="button" class="text-text-muted underline" aria-pressed={hold} onclick={toggleHold}>{hold ? "Let Chat respond" : "Let me finish"}</button>
 	{/if}
-	<span role="status" class="text-text-muted">{status === "connecting" ? "Connecting to local audio…" : muted ? "Mic muted" : transcribing ? "Transcribing…" : hold ? "Listening until you’re ready" : "Mic on"}</span>
+	<span role="status" class="text-text-muted">{status === "connecting" ? "Connecting to local audio…" : muted ? "Mic muted" : !headphones && speakerPlaying ? "Speaking · mic paused" : transcribing ? "Transcribing…" : hold ? "Listening until you’re ready" : "Mic on"}</span>
 {/if}
 {#if transcript}<span class="basis-full break-words text-text-muted">Heard you say “{transcript}”</span>{/if}
 {#if note}<span role="status" class="basis-full text-text-muted">{note}</span>{/if}

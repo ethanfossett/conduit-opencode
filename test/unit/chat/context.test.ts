@@ -135,3 +135,37 @@ it("persists context choices and remembers reasoning on regeneration without sen
 		await rm(directory, { recursive: true, force: true });
 	}
 });
+
+it("bounds voice history on a long chat while retaining recent text and pins", () => {
+	const messages = [
+		user("Project title is Northstar."),
+		...Array.from({ length: 30 }, (_, index) =>
+			index % 2 === 0
+				? assistant(
+						`Inventory detail ${index}. ${"Archive record. ".repeat(340)}`,
+					)
+				: user(`Inventory follow-up ${index}. ${"Audit trail. ".repeat(390)}`),
+		),
+	];
+	const chat: ChatConversation = {
+		id: "voice-budget",
+		title: "Voice budget test",
+		updatedAt: 0,
+		temporary: true,
+		pinnedContext: [0],
+		messages,
+	};
+	const spoken = assembleHistory(chat, messages.length, "Inventory", 800, true);
+	const typed = assembleHistory(chat, messages.length, "Inventory", 800);
+	expect(spoken).toEqual(
+		expect.arrayContaining([
+			expect.objectContaining({
+				kind: "Pinned",
+				text: "Project title is Northstar.",
+			}),
+			expect.objectContaining({ index: messages.length - 1, kind: "Recent" }),
+		]),
+	);
+	expect(Buffer.byteLength(JSON.stringify(spoken))).toBeLessThan(17_210);
+	expect(Buffer.byteLength(JSON.stringify(typed))).toBeGreaterThan(18_000);
+});

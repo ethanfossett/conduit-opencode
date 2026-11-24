@@ -62,6 +62,7 @@ export function assembleHistory(
 	through: number,
 	prompt: string,
 	latestBytes: number,
+	voice = false,
 ): ChatContextEntry[] {
 	const indices = Array.from({ length: through }, (_, index) => index).filter(
 		(index) =>
@@ -74,7 +75,9 @@ export function assembleHistory(
 	);
 	const pins = new Set(chat.pinnedContext);
 	const selected = new Map<number, ChatContextEntry>();
-	let budget = Math.max(0, 96_000 - latestBytes);
+	let budget = Math.max(0, (voice ? 18_000 : 96_000) - latestBytes);
+	const recentLimit = voice ? 1_800 : 6_000;
+	const recallLimit = voice ? 1_200 : 4_000;
 	function add(index: number, kind: ChatContextEntry["kind"], text: string) {
 		const role = chat.messages[index]?.role;
 		if (!role || !text || selected.has(index)) return;
@@ -90,11 +93,15 @@ export function assembleHistory(
 		add(
 			index,
 			pins.has(index) ? "Pinned" : "Recent",
-			(chat.messages[index]?.text ?? "").slice(0, 6_000),
+			(chat.messages[index]?.text ?? "").slice(0, recentLimit),
 		);
 	}
 	for (const index of indices.filter((index) => pins.has(index)).reverse()) {
-		add(index, "Pinned", (chat.messages[index]?.text ?? "").slice(0, 4_000));
+		add(
+			index,
+			"Pinned",
+			(chat.messages[index]?.text ?? "").slice(0, recallLimit),
+		);
 	}
 
 	// Derive the brief from eligible source messages on every turn. Edits and
@@ -157,18 +164,26 @@ export function assembleHistory(
 		.filter(({ score }) => score > 0)
 		.sort((a, b) => b.score - a.score || b.index - a.index)
 		.slice(0, 6)) {
-		add(index, "Recalled", (chat.messages[index]?.text ?? "").slice(0, 4_000));
+		add(
+			index,
+			"Recalled",
+			(chat.messages[index]?.text ?? "").slice(0, recallLimit),
+		);
 		// Recover the other half of a matching exchange when it is eligible.
 		const partner = index + (chat.messages[index]?.role === "user" ? 1 : -1);
 		if (indices.includes(partner))
 			add(
 				partner,
 				"Recalled",
-				(chat.messages[partner]?.text ?? "").slice(0, 4_000),
+				(chat.messages[partner]?.text ?? "").slice(0, recallLimit),
 			);
 	}
 	for (const index of recent.reverse()) {
-		add(index, "Recent", (chat.messages[index]?.text ?? "").slice(0, 6_000));
+		add(
+			index,
+			"Recent",
+			(chat.messages[index]?.text ?? "").slice(0, recentLimit),
+		);
 	}
 	return [...selected.values()].sort((a, b) => a.index - b.index);
 }

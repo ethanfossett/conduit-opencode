@@ -173,18 +173,23 @@ export async function handleChatApi(
 			return;
 		}
 		if (id && operation === "/context/preview") {
-			const { draft, editFrom } = body;
+			const { draft, editFrom, voice } = body;
 			if (
 				Object.keys(body).some(
-					(key) => key !== "draft" && key !== "editFrom",
+					(key) => key !== "draft" && key !== "editFrom" && key !== "voice",
 				) ||
 				typeof draft !== "string" ||
 				draft.length > 24_000 ||
+				(voice !== undefined && voice !== true) ||
 				(editFrom !== undefined &&
 					(typeof editFrom !== "number" || !Number.isSafeInteger(editFrom)))
 			)
 				throw new ChatError(400, "Enter a valid draft to preview context.");
-			respond(res, 200, await service.previewContext(id, draft, editFrom));
+			respond(
+				res,
+				200,
+				await service.previewContext(id, draft, editFrom, voice),
+			);
 			return;
 		}
 		if (id && operation === "/context") {

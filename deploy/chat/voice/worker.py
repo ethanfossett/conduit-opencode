@@ -85,6 +85,8 @@ class VoiceInput(FrameProcessor):
         self.speaking = False
         self.last_stop = 0.0
         self.held = False
+        self.capture_enabled = True
+        self.capture_epoch = 0
         self.committing = False
         self.commit_requested = False
         self.partial_text = []
@@ -96,6 +98,9 @@ class VoiceInput(FrameProcessor):
 
     async def process_frame(self, frame, direction):
         await super().process_frame(frame, direction)
+        if not self.capture_enabled:
+            await self.push_frame(frame, direction)
+            return
         if isinstance(frame, VADUserStartedSpeakingFrame):
             self.speaking = True
             self.commit_requested = False
@@ -119,6 +124,20 @@ class VoiceInput(FrameProcessor):
                     self.commit()
         await self.push_frame(frame, direction)
 
+    def set_capture(self, enabled):
+        if self.capture_enabled == enabled:
+            return
+        self.capture_enabled = enabled
+        if not enabled:
+            self.capture_epoch += 1
+            self.audio = None
+            self.speaking = False
+            self.commit_requested = False
+            self.partial_text.clear()
+            self.pre_roll.clear()
+            if self.pending:
+                self.pending.cancel()
+
     async def finish_when_ready(self):
         self.smart.clear()
         self.smart.append_audio(bytes(self.audio[-RATE * 2 * 8:]), True)
@@ -139,9 +158,9 @@ class VoiceInput(FrameProcessor):
         self.pre_roll.clear()
         self.committing = True
         self.send({"kind": "transcribing"})
-        self.transcribing = asyncio.create_task(self.transcribe(samples))
+        self.transcribing = asyncio.create_task(self.transcribe(samples, self.capture_epoch))
 
-    async def transcribe(self, samples):
+    async def transcribe(self, samples, epoch):
         try:
             signal = np.frombuffer(samples, dtype="<i2").astype(np.float32) / 32768
             length = len(signal) // 320 * 320
@@ -159,6 +178,8 @@ class VoiceInput(FrameProcessor):
                 },
             )
             response.raise_for_status()
+            if epoch != self.capture_epoch:
+                return
             text = " ".join(
                 segment.get("text", "").strip() for segment in response.json().get("segments", [])
                 if segment.get("no_speech_prob", 1) < 0.5 and segment.get("avg_logprob", -2) > -1
@@ -172,12 +193,13 @@ class VoiceInput(FrameProcessor):
             await asyncio.sleep(max(0, self.last_stop + 0.26 - time.monotonic()))
             # If speech resumed before transcription caught up, maintain one
             # input turn and wait for the resumed segment to settle.
-            if self.audio is None and not self.speaking:
+            if epoch == self.capture_epoch and self.audio is None and not self.speaking:
                 text = " ".join(self.partial_text)
                 self.partial_text.clear()
                 self.send({"kind": "transcript", "text": text[:24_000]})
         except (ValueError, httpx.HTTPError):
-            self.send({"kind": "transcript-error"})
+            if epoch == self.capture_epoch:
+                self.send({"kind": "transcript-error"})
         finally:
             self.committing = False
             if self.commit_requested:
@@ -245,6 +267,8 @@ class Session:
                 self.input.held = message.get("enabled") is True
                 if not self.input.held and not self.input.speaking:
                     self.input.commit()
+            elif kind == "capture":
+                self.input.set_capture(message.get("enabled") is True)
             elif kind == "commit":
                 self.input.commit()
             elif kind == "flush":
@@ -320,7 +344,7 @@ class Session:
                             "pcm": base64.b64encode(chunk).decode("ascii"),
                         })
                         deadline = max(deadline, time.monotonic() - 0.05)
-                        deadline += len(chunk) / (2 * model.sample_rate) * 0.82
+                        deadline += len(chunk) / (2 * model.sample_rate)
                         await asyncio.sleep(max(0, deadline - time.monotonic()))
             except (ValueError, RuntimeError, TypeError) as error:
                 print("TTS error:", type(error).__name__, flush=True)

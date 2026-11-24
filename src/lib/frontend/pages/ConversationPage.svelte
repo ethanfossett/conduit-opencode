@@ -142,7 +142,7 @@
 		const draft = text.trim();
 		void run(async () => {
 			const entries = await api<ChatContextEntry[]>(`/${id}/context/preview`, "POST", {
-				draft, ...(editFrom !== null && { editFrom }),
+				draft, ...(editFrom !== null && { editFrom }), ...(liveActive && { voice: true }),
 			});
 			if (chat?.id === id) contextPreview = { draft, entries };
 		});
@@ -875,7 +875,7 @@
 								<div class="space-y-2 px-4 py-3 text-sm">
 									{#if chat.turn.reply}<div class="md-content overflow-x-auto leading-relaxed">{@html renderMarkdown(chat.turn.reply, chatMarkdown)}</div>{/if}
 									{#if sending}
-										<span class="text-text-muted">{offline ? "Reconnecting…" : chat.turn.prompt.reasoning === "high" && !chat.turn.reply ? "Thinking…" : "Cyber v1 is replying…"}</span>
+										<span class="text-text-muted">{offline ? "Reconnecting…" : !chat.turn.reply ? chat.turn.prompt.reasoning === "high" ? "Thinking…" : "Waiting for the model…" : "Receiving reply…"}</span>
 										<button type="button" class="ms-2 underline" disabled={busy} onclick={stop}>Stop</button>
 									{:else}
 										<span>{chat.turn.error ?? "Reply stopped."}</span>

@@ -15,7 +15,11 @@ import { assembleHistory, canRecall } from "./context.js";
 import { DocumentReviews } from "./document-review.js";
 import { ChatError } from "./errors.js";
 import { ChatFiles, documentCitations } from "./files.js";
-import { type CompletionMessage, streamNodeCode } from "./nodecode-stream.js";
+import {
+	ChatStreamError,
+	type CompletionMessage,
+	streamNodeCode,
+} from "./nodecode-stream.js";
 import { type ChatSearch, createConfiguredSearch } from "./search.js";
 import type {
 	ChatAttachment,
@@ -420,7 +424,12 @@ export class ChatService {
 		}
 	}
 
-	async previewContext(id: string, draft: string, editFrom?: number) {
+	async previewContext(
+		id: string,
+		draft: string,
+		editFrom?: number,
+		voice = false,
+	) {
 		const chat = await this.get(id);
 		const through = editFrom ?? chat.messages.length;
 		if (through < 0 || through > chat.messages.length)
@@ -431,7 +440,7 @@ export class ChatService {
 		const bytes = Buffer.byteLength(
 			JSON.stringify({ role: "user", text: draft }),
 		);
-		return assembleHistory(chat, through, draft, bytes);
+		return assembleHistory(chat, through, draft, bytes, voice);
 	}
 
 	async updateContext(
@@ -700,6 +709,7 @@ export class ChatService {
 				history.length,
 				turn.prompt.text,
 				Buffer.byteLength(JSON.stringify(latest)),
+				voice,
 			);
 			const context = [...selected, latest];
 			const instructions = documents.length
@@ -798,7 +808,7 @@ export class ChatService {
 				],
 			};
 			await this.save(updated);
-		} catch {
+		} catch (error) {
 			if (signal.aborted && turn.prompt.voice && turn.played !== undefined) {
 				const { turn: _turn, lastContext: _context, ...rest } = chat;
 				const heard = (turn.reply ?? "").slice(0, turn.played).trimEnd();
@@ -829,7 +839,10 @@ export class ChatService {
 					...turn,
 					status: signal.aborted ? "stopped" : "failed",
 					...(!signal.aborted && {
-						error: "The Chat model could not complete the reply.",
+						error:
+							error instanceof ChatStreamError
+								? error.message
+								: "The Chat model could not complete the reply.",
 					}),
 				};
 				updated = { ...chat, turn: failed, updatedAt: Date.now() };
