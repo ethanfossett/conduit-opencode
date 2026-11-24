@@ -67,6 +67,11 @@
 		speakerTail = setTimeout(() => setSpeakerPlaying(false), 320);
 	}
 
+	function releaseAfterReply() {
+		if (speakerPlaying && outputFinished && pendingPhrases === 0 && sources.size === 0)
+			releaseSpeaker();
+	}
+
 	function clearAudio() {
 		for (const source of sources) {
 			source.onended = null;
@@ -182,7 +187,7 @@
 		player.onended = () => {
 			sources.delete(player);
 			player.disconnect();
-			if (ctx.currentTime >= next - 0.025) releaseSpeaker();
+			releaseAfterReply();
 		};
 		player.start(next);
 		next += buffer.duration;
@@ -203,6 +208,7 @@
 			played = Math.max(played, end);
 			sources.delete(marker);
 			marker.disconnect();
+			releaseAfterReply();
 		};
 		marker.start(next);
 	}
@@ -245,6 +251,7 @@
 			offset += end;
 		}
 		outputFinished = complete;
+		releaseAfterReply();
 	}
 
 	$effect(() => {
@@ -255,6 +262,7 @@
 		if (run?.id === id && run.status === "running") feed(id, run.reply ?? "", false);
 		if (last?.voiceTurnId === id && !last.interrupted) feed(id, last.text, true);
 		if (run?.id === id && run.status === "failed") {
+			feed(id, run.reply ?? "", true);
 			note = run.error ?? "The selected model could not answer.";
 		}
 	});
